@@ -92,8 +92,8 @@ src/trust/
 ├── roots.ts          # Pre-loaded root keys (integration point)
 ├── README.md
 └── __tests__/
-    ├── engine.test.ts    # 68 tests
-    ├── store.test.ts     # 21 tests
+    ├── engine.test.ts    # 83+ engine tests
+    ├── store.test.ts     # 21 store tests
     └── fixtures.ts       # Deterministic Ed25519 key pairs
 ```
 
@@ -230,7 +230,7 @@ node --experimental-strip-types --import ./scripts/ts-resolver.mjs --test 'src/t
 npm test
 ```
 
-89 tests covering:
+104+ tests covering:
 - Entity CRUD, trust kind upgrades, key validation
 - Delegation/revocation lifecycle (scope checking, trust chain, original delegator path)
 - Trust chain resolution (two-level, three-level, cycles, scope gaps, revocation at every level, max depth boundary)

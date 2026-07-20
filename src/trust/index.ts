@@ -36,8 +36,8 @@ export {
   publicKeyFromKeyId,
   equalKeyId,
   hashStatement,
+  hashSerialized,
   serializeStatement,
-  ALL_SCOPES,
 } from './types';
 
 export type {

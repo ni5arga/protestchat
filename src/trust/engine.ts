@@ -91,7 +91,12 @@ export class TrustEngine {
     const id = keyIdFromPublicKey(publicKey);
     const existing = await this.store.getEntity(id);
     if (existing) {
-      const mergedKind = trustKindPriority(existing.trustKind, trustKind);
+      // Protect root entities from accidental downgrade. Everything else
+      // uses the caller's requested trustKind — the user's explicit choice
+      // always wins over auto-assigned kinds from delegation chains.
+      const mergedKind = existing.trustKind === 'root' && trustKind !== 'root'
+        ? existing.trustKind
+        : trustKind;
       const updated: Entity = {
         ...existing,
         trustKind: mergedKind,
@@ -150,6 +155,32 @@ export class TrustEngine {
   async listSubscribed(): Promise<Entity[]> {
     const all = await this.store.listEntities();
     return all.filter((e) => e.trustKind === 'root' || e.trustKind === 'direct');
+  }
+
+  /**
+   * Convenience: subscribe to a trust anchor (root). Equivalent to
+   * subscribe(key, name, 'root'). Use for entities that should have
+   * full authority — leadership, coordinating committees, etc.
+   */
+  async subscribeRoot(
+    publicKey: Uint8Array,
+    name: string,
+    metadata: Record<string, string> = {},
+  ): Promise<Entity> {
+    return this.subscribe(publicKey, name, 'root', metadata);
+  }
+
+  /**
+   * Convenience: add a contact met in person. Equivalent to
+   * subscribe(key, name, 'direct'). Use for individual contacts
+   * whose safety number you have verified.
+   */
+  async addContact(
+    publicKey: Uint8Array,
+    name: string,
+    metadata: Record<string, string> = {},
+  ): Promise<Entity> {
+    return this.subscribe(publicKey, name, 'direct', metadata);
   }
 
   /**
@@ -286,16 +317,21 @@ export class TrustEngine {
     try {
       issuerKey = publicKeyFromKeyId(stmt.issuer);
     } catch {
-      return reject(signed, 'unknown-issuer', 'Invalid issuer key ID');
+      return reject(signed, 'unknown-issuer', 'Issuer key ID is not a valid 32-byte Ed25519 public key');
     }
 
     // Serialize once and reuse: sig check + hash below use the same bytes.
-    const serialized = serializeStatement(stmt);
+    let serialized: Uint8Array;
+    try {
+      serialized = serializeStatement(stmt);
+    } catch (e) {
+      return reject(signed, 'untrusted', `Cannot serialize statement: ${(e as Error).message}`);
+    }
     let valid: boolean;
     try {
       valid = ed25519.verify(signature, serialized, issuerKey);
     } catch {
-      return reject(signed, 'untrusted', 'Signature verification threw');
+      return reject(signed, 'untrusted', 'Signature verification failed due to malformed input');
     }
     if (!valid) {
       return reject(signed, 'untrusted', 'Ed25519 signature does not match');
@@ -359,36 +395,44 @@ export class TrustEngine {
     let scopes: Scope[];
     try {
       const parsed = JSON.parse(new TextDecoder().decode(signed.statement.payload));
-      if (typeof parsed.delegate !== 'string') throw new Error();
-      if (!Array.isArray(parsed.scope)) throw new Error();
+      if (typeof parsed.delegate !== 'string') throw new Error('delegate field must be a string');
+      if (!Array.isArray(parsed.scope)) throw new Error('scope field must be an array');
       // Validate and deduplicate scopes
       const filtered: Scope[] = parsed.scope.filter((s: string): s is Scope =>
         (ALL_SCOPES as readonly string[]).includes(s)
       );
+      if (filtered.length !== parsed.scope.length) {
+        throw new Error('scope contains invalid values; valid scopes: certify, announce, validate');
+      }
       scopes = [...new Set(filtered)];
-      if (scopes.length === 0) throw new Error();
+      if (scopes.length === 0) throw new Error('no valid scopes provided');
       delegate = parsed.delegate;
 
       // Reject self-delegation (would create cycle)
       if (delegate === issuer.id) {
         return reject(signed, 'untrusted', 'Self-delegation is not allowed');
       }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'unknown error';
+      return reject(signed, 'untrusted', `Invalid delegation payload: ${msg}`);
+    }
+
+    // Validate delegate key format before doing expensive chain check
+    try {
+      publicKeyFromKeyId(delegate);
     } catch {
-      return reject(signed, 'untrusted', 'Invalid delegation payload');
+      return reject(signed, 'untrusted', 'Invalid delegate key ID: must be 32-byte Ed25519 public key as hex');
+    }
+
+    // Check delegate is not revoked
+    if (await this.store.isRevoked(delegate)) {
+      return reject(signed, 'untrusted', 'Cannot delegate to a revoked entity');
     }
 
     // Check issuer has certify scope
     const chain = await this.getTrustChain(issuer.id, 'certify');
     if (!chain) {
       return reject(signed, 'untrusted', 'Issuer does not have certify scope');
-    }
-
-    // Validate delegate key format before storing anything
-    // (publicKeyFromKeyId validates length; may throw on bad hex)
-    try {
-      publicKeyFromKeyId(delegate);
-    } catch {
-      return reject(signed, 'untrusted', 'Invalid delegate key ID');
     }
 
     // Auto-ensure the delegate entity exists with 'delegated' trust.
@@ -434,14 +478,15 @@ export class TrustEngine {
     let reason: string;
     try {
       const parsed = JSON.parse(new TextDecoder().decode(signed.statement.payload));
-      if (typeof parsed.target !== 'string') throw new Error();
-      if (typeof parsed.reason !== 'string') throw new Error();
+      if (typeof parsed.target !== 'string') throw new Error('target field must be a string');
+      if (typeof parsed.reason !== 'string') throw new Error('reason field must be a string');
       target = parsed.target;
       reason = parsed.reason;
       // Validate target is a valid KeyId
       publicKeyFromKeyId(target);
-    } catch {
-      return reject(signed, 'untrusted', 'Invalid revocation payload');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'unknown error';
+      return reject(signed, 'untrusted', `Invalid revocation payload: ${msg}`);
     }
 
     // Check if issuer has certify scope (case a)
@@ -512,6 +557,8 @@ export class TrustEngine {
     const threshold = DEFAULT_EMERGENCY_THRESHOLD;
 
     if (count >= threshold) {
+      // Clean up the pending record — it's now verified
+      await this.store.removePendingEmergency(signed.statement.id);
       return {
         status: 'verified-emergency',
         signed,
@@ -603,73 +650,72 @@ export class TrustEngine {
    * Trace a delegation chain from `entityId` up to a root entity that grants
    * the required `scope`.
    *
-   * Returns the chain (entity → delegator → ... → root) if found, or null
+   * Tries delegations newest-first and backtracks if one path fails.
+   * Returns the chain (entity -> delegator -> ... -> root) if found, or null
    * if no valid chain exists.
    */
   async getTrustChain(
     entityId: KeyId,
     scope: Scope,
   ): Promise<Entity[] | null> {
-    // Check revocation at every level, including the starting entity
     if (await this.store.isRevoked(entityId)) return null;
-
-    // Root entities have all scopes implicitly
     const root = await this.store.getEntity(entityId);
     if (root?.trustKind === 'root') return [root];
+    return this.resolveChain(entityId, scope, new Set(), 0);
+  }
 
-    const chain: Entity[] = [];
-    let current = entityId;
-    let requiredScope: Scope = scope;
-    const visited = new Set<KeyId>();
+  /**
+   * Recursive trust chain resolver with backtracking.
+   * Tries each valid delegation in order (newest first); if one path fails,
+   * tries the next. This prevents a single broken delegation from blocking
+   * an otherwise valid chain.
+   */
+  private async resolveChain(
+    current: KeyId,
+    requestedScope: Scope,
+    visited: Set<KeyId>,
+    depth: number,
+  ): Promise<Entity[] | null> {
+    if (depth > MAX_CHAIN_DEPTH) return null;
+    if (visited.has(current)) return null;
 
-    for (let depth = 0; depth <= MAX_CHAIN_DEPTH; depth++) {
-      if (visited.has(current)) return null; // cycle detected
-      visited.add(current);
+    const nextVisited = new Set(visited);
+    nextVisited.add(current);
 
-      // Check revocation before using this entity
-      if (await this.store.isRevoked(current)) return null;
+    if (await this.store.isRevoked(current)) return null;
 
-      const entity = await this.store.getEntity(current);
-      if (!entity) return null;
+    const entity = await this.store.getEntity(current);
+    if (!entity) return null;
 
-      chain.push(entity);
+    // Root entities have all scopes implicitly
+    if (entity.trustKind === 'root') return [entity];
 
-      // Found a root — chain complete
-      if (entity.trustKind === 'root') {
-        return chain;
-      }
+    // 'direct' entities are trusted in person — no delegation upward
+    if (entity.trustKind === 'direct') return null;
 
-      // 'direct' entities don't delegate upward — they're trusted in person
-      if (entity.trustKind === 'direct') {
-        return null;
-      }
+    // First level needs the requested scope; levels above need 'certify'
+    const requiredScope = visited.size === 0 ? requestedScope : 'certify';
 
-      // Find a delegation that gives this entity the required scope.
-      // The first level (target entity) must have the requested scope.
-      // Every level above must have 'certify' scope (to be allowed to delegate).
-      const delegations = await this.store.getDelegationsForDelegate(current);
-
-      const valid = delegations.filter((d) => {
+    const delegations = await this.store.getDelegationsForDelegate(current);
+    const valid = delegations
+      .filter((d) => {
         if (!d.scope.includes(requiredScope)) return false;
         if (d.expiresAt !== undefined && d.expiresAt <= Date.now()) return false;
         return true;
-      });
+      })
+      .sort((a, b) => b.issuedAt - a.issuedAt); // newest first for priority
 
-      if (valid.length === 0) return null;
-
-      // Use the newest valid delegation
-      const delegation = valid.reduce((a, b) =>
-        a.issuedAt > b.issuedAt ? a : b,
+    // Try each delegation in order — backtrack on failure
+    for (const delegation of valid) {
+      const subChain = await this.resolveChain(
+        delegation.issuer, requestedScope, nextVisited, depth + 1,
       );
-
-      // Levels above need 'certify' to delegate further
-      requiredScope = 'certify';
-
-      // Move up to the delegator
-      current = delegation.issuer;
+      if (subChain !== null) {
+        return [entity, ...subChain];
+      }
     }
 
-    return null; // chain too deep
+    return null;
   }
 
   /**
@@ -737,7 +783,6 @@ export class TrustEngine {
     if (!authorized) {
       return {
         status: 'untrusted',
-        signed: await this.store.getPendingEmergency(statementId) ?? this.emptySigned(),
         reason: 'Validator lacks validate scope',
       };
     }
@@ -746,22 +791,20 @@ export class TrustEngine {
     if (!pending) {
       return {
         status: 'untrusted',
-        signed: this.emptySigned(),
         reason: 'Unknown emergency statement',
       };
     }
 
     // Verify proof of possession: the secret key must match the validator's
     // public key. This prevents attackers from injecting fake validations
-    // using only a known public KeyId.
+    // using only a known public KeyId. Throws on mismatch — this is a
+    // programming error (wrong key passed for the claimed validator ID).
     const derivedPublic = ed25519.getPublicKey(validatorSecret);
     const validatorPublic = publicKeyFromKeyId(validatorId);
     if (!constantTimeEqual(derivedPublic, validatorPublic)) {
-      return {
-        status: 'untrusted',
-        signed: pending,
-        reason: 'Validator secret does not match public key',
-      };
+      throw new Error(
+        'validateEmergency: validator secret does not match validatorId',
+      );
     }
 
     // Sign the statementId as cryptographic proof of validation
@@ -826,9 +869,16 @@ export class TrustEngine {
     threshold = DEFAULT_EMERGENCY_THRESHOLD,
   ): Promise<SignedStatement[]> {
     const pending = await this.store.getPendingEmergencies();
+    const now = Date.now();
     const newlyVerified: SignedStatement[] = [];
 
     for (const p of pending) {
+      // Evict expired emergencies
+      if (p.statement.expiresAt !== undefined && p.statement.expiresAt <= now) {
+        await this.store.removePendingEmergency(p.statement.id);
+        continue;
+      }
+
       const count = await this.store.getValidationCount(p.statement.id);
       if (count >= threshold) {
         newlyVerified.push(p);
@@ -837,6 +887,18 @@ export class TrustEngine {
     }
 
     return newlyVerified;
+  }
+
+  // -----------------------------------------------------------------------
+  // Lifecycle
+  // -----------------------------------------------------------------------
+
+  /**
+   * Remove all entities, delegations, revocations, and pending emergencies
+   * from the trust store. For panic wipe and testing.
+   */
+  async clearAll(): Promise<void> {
+    await this.store.clearAll();
   }
 
   // -----------------------------------------------------------------------
@@ -850,16 +912,6 @@ export class TrustEngine {
     return this.store.isRevoked(entityId);
   }
 
-  /** Build a placeholder SignedStatement for error results. */
-  private emptySigned(): SignedStatement {
-    return {
-      statement: {
-        id: '', type: 'text', issuer: '',
-        payload: new Uint8Array(0), issuedAt: 0,
-      },
-      signature: new Uint8Array(0),
-    };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -876,19 +928,6 @@ function reject(
 
 function shortName(id: KeyId): string {
   return `unknown-${id.slice(0, 6)}`;
-}
-
-/**
- * Merge two trust kinds, preferring the one with higher authority.
- */
-function trustKindPriority(a: TrustKind, b: TrustKind): TrustKind {
-  const order: Record<TrustKind, number> = {
-    root: 3,
-    delegated: 2,
-    direct: 1,
-    none: 0,
-  };
-  return order[a] >= order[b] ? a : b;
 }
 
 /**

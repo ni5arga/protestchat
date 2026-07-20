@@ -15,7 +15,6 @@ import type {
   Revocation,
   Validation,
   SignedStatement,
-  Scope,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -171,7 +170,11 @@ export function createMemoryTrustStore(): TrustStore {
       // Remove revocations targeting this entity
       const targetRevIds = byRevokedTarget.get(id);
       if (targetRevIds) {
-        for (const rId of targetRevIds) revocations.delete(rId);
+        for (const rId of targetRevIds) {
+          const r = revocations.get(rId);
+          if (r) removeFromIndex(byRevocationIssuer, r.issuer, rId);
+          revocations.delete(rId);
+        }
         byRevokedTarget.delete(id);
       }
 
@@ -331,8 +334,9 @@ export function createMemoryTrustStore(): TrustStore {
 
     // ---- Pending emergencies ----
     async addPendingEmergency(signed) {
-      // Evict oldest if at cap (protect against flood DoS)
-      if (pendingEmergencies.size >= MAX_PENDING_EMERGENCIES) {
+      // Only evict if we're at capacity AND this is a genuinely new entry
+      if (!pendingEmergencies.has(signed.statement.id) &&
+          pendingEmergencies.size >= MAX_PENDING_EMERGENCIES) {
         const oldest = pendingEmergencies.keys().next().value;
         if (oldest) {
           pendingEmergencies.delete(oldest);
