@@ -1,10 +1,35 @@
 name: Android preview
 
+# Path filters keep doc/asset-only commits from spending any minutes at all —
+# nothing under these paths can change what lint/typecheck/test or the build see.
 on:
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.vscode/**'
+      - 'assets/**'
   push:
     branches: [main]
+    # A version tag is the one thing that triggers the expensive APK build below.
+    tags: ['v*']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.vscode/**'
+      - 'assets/**'
   workflow_dispatch:
+
+# Only ever keep the newest run for a given branch/PR alive. Pushing three
+# commits in a row now cancels the two older runs instead of paying for all
+# three — this is the single biggest saver on an actively iterated PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CI: true
@@ -48,7 +73,14 @@ jobs:
 
   build-android:
     name: Build Android preview
-    if: github.event_name != 'pull_request'
+    # The ~45-minute APK build was running on every merge to main, which is what
+    # burns the minutes. It is now opt-in: it runs only when you push a version
+    # tag (a real release) or trigger the workflow by hand. Day-to-day merges get
+    # the cheap quality checks and nothing else. To cut a build:
+    #   git tag v0.1.0 && git push origin v0.1.0     (or the Actions "Run workflow" button)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v')
     needs: quality
     runs-on: ubuntu-24.04
     timeout-minutes: 45
