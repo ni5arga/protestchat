@@ -72,7 +72,7 @@ Three deliberate choices:
 2. **The recipient's key is bound into both the KDF salt and the signed transcript.** A ciphertext cannot be re-addressed, and a signature cannot be lifted into a different envelope.
 3. **No recipient field anywhere.** Devices find their own mail by trial decryption. This is more expensive and is the correct trade.
 
-**Forward secrecy (direct/group).** Seals prefer a **one-time prekey** from the recipient (QR v2 intro + in-band replenishment). The recipient deletes that OTK secret on open — compromise of the long-term identity seed afterwards cannot open that ciphertext. SPK is the fallback when OTKs are exhausted; long-term identity is legacy-only.
+**Forward secrecy (direct/group).** Seals prefer a **one-time prekey** from the recipient (in-band, per peer). The recipient deletes that OTK secret on open — compromise of the long-term identity seed afterwards cannot open that ciphertext. QR v2 carries only the signed SPK (OTKs on a multi-scan plaque would silently drop mail); SPK covers the first hop and any OTK exhaustion; long-term identity is legacy-only.
 
 Residuals (see `docs/FORWARD-SECRECY.md`): no Double Ratchet / post-compromise healing; channel/broadcast have no FS; v1 contact codes have no FS until re-scan.
 

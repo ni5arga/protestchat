@@ -121,7 +121,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     mesh.setPeerPrekeys(peerPrekeysRef.current);
     const bundle = local.bundleForQr(id);
     setContactCode(encodeContactCode(id.publicId, bundle));
-    // bundleForQr issues OTKs — persist again so issued_to sticks.
+    // bundleForQr is SPK-only, but ensureReady/fillPool may have minted keys.
     const after = local.snapshot();
     await db.saveLocalPrekeys(after.spk, after.otks);
   }, []);

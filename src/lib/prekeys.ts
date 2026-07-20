@@ -5,12 +5,14 @@
  *   - Signed prekey (SPK): medium-term fallback, rotated ~hourly, wiped after 6h.
  *   - One-time prekeys (OTK): sealed-to once; secret deleted the moment we open
  *     a message under it. That delete is per-message FS.
- *   - Distribution: QR intro bundle + in-band replenishment inside sealed
- *     direct/group/receipt bodies (peers never need a directory).
+ *   - Distribution: QR intro carries **SPK only**; OTKs arrive in-band inside
+ *     sealed direct/group/receipt bodies, issued per peer. A QR is inherently
+ *     multi-scan — advertising OTKs there caused silent loss when two people
+ *     sealed to the same intro key. SPK delivers; exclusive OTKs follow.
  *
- * OTKs are issued per peer (or for a single QR intro). Re-advertising the same
- * OTK to two peers would let the second sealer's ciphertext become unopenable
- * after the first is consumed — so issuance is tracked.
+ * OTKs are issued per peer. Re-advertising the same OTK to two peers would let
+ * the second sealer's ciphertext become unopenable after the first is consumed
+ * — so issuance is tracked.
  */
 
 import { concat, fromBase64, toBase64 } from './bytes';
@@ -25,12 +27,25 @@ import {
 
 const X_LEN = 32;
 
-/** OTKs offered in a QR intro (one introducer pair). */
-export const QR_OTK_COUNT = 24;
+/**
+ * QR intros carry SPK only (`0` OTKs). Kept as a named constant so callers and
+ * tests document the policy; raising it would reintroduce multi-scan silent loss.
+ */
+export const QR_OTK_COUNT = 0;
 /** Fresh OTKs attached to each outbound sealed peer message. */
 export const REPLENISH_OTK_COUNT = 8;
 /** Keep at least this many unissued OTKs ready to assign. */
-export const OTK_POOL_FLOOR = 16;
+export const OTK_POOL_FLOOR = 8;
+/**
+ * Hard ceiling on retained OTK secrets. Bounds trial-decrypt cost: every sealed
+ * envelope on the air is tried against every secret we hold, on a phone battery.
+ */
+export const OTK_POOL_CEILING = 24;
+/**
+ * Max agreement secrets `open()` will walk (OTK + SPK). Newest OTKs first.
+ * Long-term identity is always tried after this list.
+ */
+export const OPEN_SECRET_CAP = 28;
 
 export type PrekeyBundle = {
   signed: SignedReceiveKey;
@@ -79,12 +94,14 @@ export class LocalPrekeys {
     };
   }
 
-  /** All secrets for trial decryption: OTKs first, then SPKs. */
+  /**
+   * Secrets for trial decryption: newest OTKs first, then SPKs, capped so a
+   * full pool cannot turn every overheard envelope into dozens of X25519 ops.
+   */
   secretsForOpen(): Uint8Array[] {
-    return [
-      ...[...this.otks.values()].map((o) => o.secret),
-      ...this.spk.map((k) => k.secret),
-    ];
+    const otks = [...this.otks.values()].sort((a, b) => b.createdAt - a.createdAt);
+    const secrets = [...otks.map((o) => o.secret), ...this.spk.map((k) => k.secret)];
+    return secrets.slice(0, OPEN_SECRET_CAP);
   }
 
   currentSpk(): ReceiveKey | null {
@@ -128,11 +145,17 @@ export class LocalPrekeys {
     return true;
   }
 
-  /** QR / first-intro bundle: SPK + fresh OTKs marked issuedTo='qr'. */
-  bundleForQr(owner: Identity, count = QR_OTK_COUNT): PrekeyBundle {
+  /**
+   * QR / first-intro bundle: signed SPK only.
+   * OTKs are never put on a QR — a plaque can be scanned by many people, and
+   * consume-on-open would make all but the first sealer's message undeliverable
+   * with no error. First post-scan seals use the SPK; in-band replenishment
+   * then hands each peer exclusive OTKs.
+   */
+  bundleForQr(owner: Identity, _count = QR_OTK_COUNT): PrekeyBundle {
     this.ensureReady();
     const signed = signReceiveKey(owner, this.spk[0]!);
-    return { signed, oneTimePublics: this.issueOtks('qr', count) };
+    return { signed, oneTimePublics: [] };
   }
 
   /** In-band replenishment dedicated to one peer. */
@@ -167,7 +190,7 @@ export class LocalPrekeys {
       }
     }
 
-    while (out.length < count) {
+    while (out.length < count && this.otks.size < OTK_POOL_CEILING) {
       const k = generateReceiveKey();
       const row: LocalOtk = { ...k, issuedTo };
       this.otks.set(toBase64(k.public), row);
@@ -180,7 +203,7 @@ export class LocalPrekeys {
   private fillPool(): void {
     let unissued = 0;
     for (const o of this.otks.values()) if (o.issuedTo === null) unissued++;
-    while (unissued < OTK_POOL_FLOOR) {
+    while (unissued < OTK_POOL_FLOOR && this.otks.size < OTK_POOL_CEILING) {
       const k = generateReceiveKey();
       this.otks.set(toBase64(k.public), { ...k, issuedTo: null });
       unissued++;

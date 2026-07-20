@@ -31,7 +31,7 @@ import { Radius, Spacing, TAP_TARGET, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useApp } from '@/lib/app-state';
 import { MAX_CONTACT_NAME_LENGTH, cleanContactName } from '@/lib/contact';
-import { decodeContactCode } from '@/lib/contact-code';
+import { CONTACT_CODE_PREFIX, decodeContactCode } from '@/lib/contact-code';
 
 export default function AddScreen() {
   const t = useTheme();

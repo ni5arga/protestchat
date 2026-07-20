@@ -16,6 +16,8 @@ import {
 } from '../crypto-core';
 import {
   LocalPrekeys,
+  OPEN_SECRET_CAP,
+  OTK_POOL_CEILING,
   PeerPrekeyBook,
   QR_OTK_COUNT,
   decodeBundle,
@@ -33,24 +35,30 @@ const pub = (id: typeof alice) => ({
 });
 
 describe('prekey bundles', () => {
-  it('QR bundle verifies and round-trips', () => {
+  it('QR bundle is SPK-only (no OTKs) and round-trips', () => {
     const local = new LocalPrekeys();
     local.ensureReady();
-    const bundle = local.bundleForQr(bob, QR_OTK_COUNT);
+    const bundle = local.bundleForQr(bob);
+    assert.equal(QR_OTK_COUNT, 0);
     assert.equal(verifyReceiveKey(pub(bob), bundle.signed), true);
-    assert.equal(bundle.oneTimePublics.length, QR_OTK_COUNT);
+    assert.equal(bundle.oneTimePublics.length, 0);
     const decoded = decodeBundle(encodeBundle(bundle));
     assert.ok(decoded);
-    assert.equal(decoded.oneTimePublics.length, QR_OTK_COUNT);
+    assert.equal(decoded.oneTimePublics.length, 0);
     assert.equal(verifyReceiveKey(pub(bob), decoded.signed), true);
   });
 
-  it('contact code v2 embeds a full bundle; v1 still works', () => {
+  it('contact code v2 embeds SPK; v1 still works', () => {
     const local = new LocalPrekeys();
     const bundle = local.bundleForQr(bob);
     const v2 = decodeContactCode(encodeContactCode(bob.publicId, bundle));
     assert.ok(v2?.bundle);
-    assert.equal(v2.bundle.oneTimePublics.length, QR_OTK_COUNT);
+    assert.equal(v2.bundle.oneTimePublics.length, 0);
+    assert.equal(verifyReceiveKey(v2.identity, v2.bundle.signed), true);
+
+    // SPK-only keeps the plaque scannable in a crowd (~104 bytes of key material).
+    const code = encodeContactCode(bob.publicId, bundle);
+    assert.ok(code.length < 400, `QR payload too large: ${code.length}`);
 
     const v1 = decodeContactCode(`protestchat:${bob.publicId}`);
     assert.ok(v1);
@@ -69,7 +77,7 @@ describe('per-message FS via OTK', () => {
   it('seals to an OTK, opens, consumes — long-term seed cannot reopen', () => {
     const bobLocal = new LocalPrekeys();
     bobLocal.ensureReady();
-    const bundle = bobLocal.bundleForQr(bob);
+    const bundle = bobLocal.updateForPeer(bob, alice.publicId, 4);
 
     const aliceBook = new PeerPrekeyBook();
     assert.equal(aliceBook.absorb(pub(bob), bundle), true);
@@ -95,9 +103,31 @@ describe('per-message FS via OTK', () => {
     assert.equal(open(bobCompromised, sealed, []), null);
   });
 
+  it('QR intro seals to SPK so two scanners both deliver', () => {
+    const bobLocal = new LocalPrekeys();
+    const qr = bobLocal.bundleForQr(bob);
+    assert.equal(qr.oneTimePublics.length, 0);
+
+    const aliceBook = new PeerPrekeyBook();
+    const eveBook = new PeerPrekeyBook();
+    assert.equal(aliceBook.absorb(pub(bob), qr), true);
+    assert.equal(eveBook.absorb(pub(bob), qr), true);
+
+    const a = aliceBook.takeAgreementPublic(pub(bob));
+    const e = eveBook.takeAgreementPublic(pub(bob));
+    assert.equal(a.kind, 'spk');
+    assert.equal(e.kind, 'spk');
+
+    const sealedA = seal(alice, pub(bob), toUtf8('from-alice'), a.public);
+    const sealedE = seal(eve, pub(bob), toUtf8('from-eve'), e.public);
+    const secrets = bobLocal.secretsForOpen();
+    assert.ok(open(bob, sealedA, secrets));
+    assert.ok(open(bob, sealedE, secrets));
+  });
+
   it('does not reuse an OTK public for two seals', () => {
     const bobLocal = new LocalPrekeys();
-    const bundle = bobLocal.bundleForQr(bob, 2);
+    const bundle = bobLocal.updateForPeer(bob, alice.publicId, 2);
     const book = new PeerPrekeyBook();
     book.absorb(pub(bob), bundle);
 
@@ -110,7 +140,7 @@ describe('per-message FS via OTK', () => {
 
   it('falls back to SPK then long-term when OTKs are exhausted', () => {
     const bobLocal = new LocalPrekeys();
-    const bundle = bobLocal.bundleForQr(bob, 1);
+    const bundle = bobLocal.updateForPeer(bob, alice.publicId, 1);
     const book = new PeerPrekeyBook();
     book.absorb(pub(bob), bundle);
 
@@ -121,12 +151,11 @@ describe('per-message FS via OTK', () => {
     assert.equal(empty.takeAgreementPublic(pub(bob)).kind, 'long-term');
   });
 
-  it('in-band replenishment restores OTK sealing after exhaustion', () => {
+  it('in-band replenishment restores OTK sealing after QR (SPK) intro', () => {
     const bobLocal = new LocalPrekeys();
-    const intro = bobLocal.bundleForQr(bob, 1);
+    const intro = bobLocal.bundleForQr(bob);
     const aliceBook = new PeerPrekeyBook();
     aliceBook.absorb(pub(bob), intro);
-    aliceBook.takeAgreementPublic(pub(bob)); // exhaust the one OTK
     assert.equal(aliceBook.takeAgreementPublic(pub(bob)).kind, 'spk');
 
     const replenish = bobLocal.updateForPeer(bob, alice.publicId, 4);
@@ -144,6 +173,43 @@ describe('per-message FS via OTK', () => {
       assert.equal(aliceSet.has(Buffer.from(p).toString('hex')), false);
     }
   });
+
+  it('caps trial-open secrets and the OTK pool', () => {
+    const local = new LocalPrekeys();
+    local.ensureReady();
+    // Mint well past the ceiling via per-peer issuance.
+    for (let i = 0; i < 8; i++) {
+      local.updateForPeer(bob, `peer-${i}`, 8);
+    }
+    assert.ok(local.snapshot().otks.length <= OTK_POOL_CEILING);
+    assert.ok(local.secretsForOpen().length <= OPEN_SECRET_CAP);
+  });
+});
+
+describe('trial-open cost', () => {
+  it('documents worst-case open() cost with a full secret set', () => {
+    const bobLocal = new LocalPrekeys();
+    bobLocal.ensureReady();
+    // Fill toward the ceiling with exclusive peer OTKs.
+    bobLocal.updateForPeer(bob, alice.publicId, OTK_POOL_CEILING);
+    const secrets = bobLocal.secretsForOpen();
+    assert.ok(secrets.length >= 8);
+
+    // Foreign mail: every secret must fail (the expensive / common path).
+    const sealed = seal(alice, pub(eve), toUtf8('not for bob'), pub(eve).xPublic);
+    const rounds = 200;
+    const t0 = performance.now();
+    for (let i = 0; i < rounds; i++) {
+      assert.equal(open(bob, sealed, secrets), null);
+    }
+    const avgMs = (performance.now() - t0) / rounds;
+    // Loose host-side sanity check only — phones differ; the real control is the
+    // pool ceiling. Log the number for PR review / device comparison.
+    assert.ok(avgMs < 200, `full-pool open looks accidentally quadratic: ${avgMs.toFixed(2)}ms`);
+    console.log(
+      `trial-open cost: ${secrets.length} secrets → ${avgMs.toFixed(2)}ms/envelope (host)`,
+    );
+  });
 });
 
 describe('stress', () => {
@@ -151,7 +217,7 @@ describe('stress', () => {
     const bobLocal = new LocalPrekeys();
     bobLocal.ensureReady();
     const aliceBook = new PeerPrekeyBook();
-    aliceBook.absorb(pub(bob), bobLocal.bundleForQr(bob, 24));
+    aliceBook.absorb(pub(bob), bobLocal.updateForPeer(bob, alice.publicId, 16));
 
     for (let i = 0; i < 100; i++) {
       if (aliceBook.otkCount(bob.publicId) === 0) {

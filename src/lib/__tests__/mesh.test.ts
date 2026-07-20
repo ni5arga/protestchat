@@ -910,24 +910,28 @@ describe('delivery receipts', () => {
 });
 
 describe('forward secrecy (mesh e2e)', () => {
-  it('OTK-sealed direct message opens, then is dead after consume even with identity seed', () =>
+  it('after QR (SPK), in-band OTKs seal — consumed OTK is dead even with identity seed', () =>
     scenario(['A', 'B'], async ({ A, B }, world) => {
       introduce(A, B);
       world.connect('A', 'B');
       await world.settle();
 
+      // QR is SPK-only — no exclusive OTKs until the first exchange.
+      assert.equal(A.engine.getPeerPrekeys().otkCount(B.pub.publicId), 0);
+
+      await A.engine.sendText(B.pub, 'fs-spk-hop');
+      await world.settle();
+      assert.equal(inbox(B).at(-1)?.text, 'fs-spk-hop');
+      // Receipt carried B→A OTKs; A's next seal can be per-message FS.
       assert.equal(A.engine.getPeerPrekeys().otkCount(B.pub.publicId) > 0, true);
 
-      await A.engine.sendText(B.pub, 'fs-direct');
+      const before = injected(A).length;
+      await A.engine.sendText(B.pub, 'fs-otk');
       await world.settle();
+      assert.equal(inbox(B).at(-1)?.text, 'fs-otk');
 
-      assert.deepEqual(
-        inbox(B).map((m) => m.text),
-        ['fs-direct'],
-      );
-
-      // Capture the sealed payload A injected and prove long-term seed cannot reopen.
       const sealedPayloads = injected(A)
+        .slice(before)
         .map((e) => decodeEnvelope(fromBase64(e.raw)))
         .filter((e): e is NonNullable<typeof e> => !!e && e.type === EnvelopeType.Sealed)
         .map((e) => e.payload);
@@ -947,7 +951,7 @@ describe('forward secrecy (mesh e2e)', () => {
       world.connect('A', 'B');
       await world.settle();
 
-      // Burn through the intro OTK pool and keep going — receipts carry replenishment.
+      // First hop is SPK; receipts then refill exclusive OTKs for the rest.
       for (let i = 0; i < 40; i++) {
         await A.engine.sendText(B.pub, `ping-${i}`);
         await world.settle();
@@ -958,12 +962,17 @@ describe('forward secrecy (mesh e2e)', () => {
       assert.equal(A.engine.getPeerPrekeys().otkCount(B.pub.publicId) > 0, true);
     }));
 
-  it('group fan-out uses OTKs per member after introduce', (t) =>
+  it('group fan-out delivers after SPK intro; later hops use in-band OTKs', (t) =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
       introduce(A, B);
       introduce(A, C);
       world.connect('A', 'B');
       world.connect('A', 'C');
+      await world.settle();
+
+      // Warm the pairwise books so group fan-out can prefer OTKs.
+      await A.engine.sendText(B.pub, 'warm-b');
+      await A.engine.sendText(C.pub, 'warm-c');
       await world.settle();
 
       t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -978,7 +987,7 @@ describe('forward secrecy (mesh e2e)', () => {
       assert.equal(inbox(C).some((m) => m.text === 'fs-group'), true);
     }));
 
-  it('relay still cannot read OTK-sealed mail', () =>
+  it('relay still cannot read sealed mail (SPK or OTK)', () =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
       introduce(A, C);
       world.connect('A', 'B');
