@@ -27,12 +27,15 @@ import { ModeNotice } from '@/components/mode-notice';
 import { Button, Empty, Input } from '@/components/ui';
 import { Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 import { useApp } from '@/lib/app-state';
 import { describeConversation, type ConversationInfo } from '@/lib/conversation';
 import * as db from '@/lib/db';
 
 export default function ChatScreen() {
   const t = useTheme();
+  const i18n = useI18n();
+  const { t: copy, plural } = i18n;
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -51,8 +54,8 @@ export default function ChatScreen() {
         groups,
         contactName: contact?.name,
         verified: contact?.verified,
-      }),
-    [conversationId, channels, groups, contact],
+      }, i18n),
+    [conversationId, channels, groups, contact, i18n],
   );
 
   const [messages, setMessages] = useState<db.Message[]>([]);
@@ -63,8 +66,8 @@ export default function ChatScreen() {
 
   const nameFor = useCallback(
     (publicId: string | null) =>
-      publicId ? (contacts.find((c) => c.publicId === publicId)?.name ?? 'unknown') : 'unknown',
-    [contacts],
+      publicId ? (contacts.find((c) => c.publicId === publicId)?.name ?? copy('common.unknown')) : copy('common.unknown'),
+    [contacts, copy],
   );
 
   const load = useCallback(async () => {
@@ -97,8 +100,8 @@ export default function ChatScreen() {
       await sendText(conversationId, text);
       setDraft('');
       await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not send.');
+    } catch {
+      setError(copy('common.couldNotSend'));
     } finally {
       setSending(false);
     }
@@ -126,7 +129,7 @@ export default function ChatScreen() {
               ? () => (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Rename ${contact.name}`}
+                    accessibilityLabel={copy('contact.renameA11y', { name: contact.name })}
                     hitSlop={16}
                     onPress={() => router.push(`/contact/${encodeURIComponent(conversationId)}`)}>
                     {({ pressed }) => (
@@ -135,7 +138,7 @@ export default function ChatScreen() {
                           Type.calloutStrong,
                           { color: t.accent, opacity: pressed ? 0.6 : 1 },
                         ]}>
-                        Edit
+                        {copy('contact.edit')}
                       </Text>
                     )}
                   </Pressable>
@@ -173,11 +176,11 @@ export default function ChatScreen() {
         ListFooterComponent={<Animated.View style={listSpacer} />}
         ListEmptyComponent={
           <Empty
-            title={emptyTitle(info)}
+            title={emptyTitle(info, copy)}
             detail={
               status.connected.length > 0
-                ? 'You are connected to someone right now, so anything you send goes out immediately.'
-                : 'Nothing is in range yet. Messages you send now wait on your phone and go out the moment someone is — including if you simply walk somewhere else.'
+                ? copy('chat.connectedEmpty')
+                : copy('chat.notInRangeEmpty')
             }
           />
         }
@@ -229,12 +232,12 @@ export default function ChatScreen() {
           <Input
             value={draft}
             onChangeText={setDraft}
-            placeholder={placeholderFor(info, group?.members.length ?? 0, contact?.name)}
+            placeholder={placeholderFor(info, group?.members.length ?? 0, copy, plural, contact?.name)}
             multiline
             style={{ flex: 1, maxHeight: 132 }}
           />
           <Button
-            title="Send"
+            title={copy('common.send')}
             onPress={onSend}
             disabled={!draft.trim() || sending}
             style={{ paddingHorizontal: Spacing.lg }}
@@ -249,33 +252,37 @@ export default function ChatScreen() {
  * Who is about to read this. Never the word "Message" — a neutral placeholder
  * is exactly the affordance that makes a broadcast feel like a private chat.
  */
-function placeholderFor(info: ConversationInfo, memberCount: number, contactName?: string): string {
+function placeholderFor(
+  info: ConversationInfo,
+  memberCount: number,
+  copy: ReturnType<typeof useI18n>['t'],
+  plural: ReturnType<typeof useI18n>['plural'],
+  contactName?: string,
+): string {
   switch (info.mode) {
     case 'public':
-      return 'Everyone nearby will read this';
+      return copy('chat.placeholder.public');
     case 'channel':
-      return 'Anyone with the passphrase will read this';
+      return copy('chat.placeholder.channel');
     case 'group':
-      return memberCount === 1
-        ? 'Only the 1 person you added will read this'
-        : `Only the ${memberCount} people you added will read this`;
+      return plural('chat.placeholder.group', memberCount);
     case 'direct':
       return info.tone === 'ok'
-        ? `Only ${contactName ?? 'this person'} will read this`
-        : 'Only whoever holds this code will read this — not verified';
+        ? copy('chat.placeholder.direct', { name: contactName ?? copy('chat.placeholder.directFallback') })
+        : copy('chat.placeholder.unverified');
   }
 }
 
-function emptyTitle(info: ConversationInfo): string {
+function emptyTitle(info: ConversationInfo, copy: ReturnType<typeof useI18n>['t']): string {
   switch (info.mode) {
     case 'public':
-      return 'Nothing broadcast yet';
+      return copy('chat.empty.public');
     case 'channel':
-      return 'Nothing in this channel yet';
+      return copy('chat.empty.channel');
     case 'group':
-      return 'Nothing in this group yet';
+      return copy('chat.empty.group');
     case 'direct':
-      return 'No messages yet';
+      return copy('chat.empty.direct');
   }
 }
 

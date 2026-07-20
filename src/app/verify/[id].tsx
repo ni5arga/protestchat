@@ -20,10 +20,12 @@ import { StyleSheet, Text, View } from 'react-native';
 import { Button, Notice, Screen, Tag } from '@/components/ui';
 import { Fonts, Radius, Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 import { useApp } from '@/lib/app-state';
 
 export default function VerifyScreen() {
   const t = useTheme();
+  const { t: copy } = useI18n();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const peerId = decodeURIComponent(id ?? '');
@@ -35,13 +37,12 @@ export default function VerifyScreen() {
 
   return (
     <Screen contentStyle={{ gap: Spacing.xl }}>
-      <Stack.Screen options={{ title: contact?.name ?? 'Verify' }} />
+      <Stack.Screen options={{ title: contact?.name ?? copy('verify.title') }} />
 
       <View style={{ gap: Spacing.md }}>
-        <Text style={[Type.hero, { color: t.text }]}>Check these numbers together</Text>
+        <Text style={[Type.hero, { color: t.text }]}>{copy('verify.heading')}</Text>
         <Text style={[Type.body, { color: t.textMuted }]}>
-          Hold your phones side by side. If both screens show the same numbers, your messages can
-          only be read by the two of you.
+          {copy('verify.detail')}
         </Text>
       </View>
 
@@ -64,21 +65,20 @@ export default function VerifyScreen() {
 
       <Notice tone="caution">
         <Text style={[Type.callout, { color: t.text }]}>
-          Do this in person. Numbers read out over a phone call, or sent in another app, can be
-          faked by whoever controls that call or that app.
+          {copy('verify.inPerson')}
         </Text>
       </Notice>
 
       {contact?.verified ? (
         <View style={{ gap: Spacing.lg }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md }}>
-            <Tag tone="ok" label="Verified" />
+            <Tag tone="ok" label={copy('common.verified')} />
             <Text style={[Type.callout, { color: t.textMuted, flex: 1 }]}>
-              You marked this person as checked.
+              {copy('verify.checked')}
             </Text>
           </View>
           <Button
-            title="Undo"
+            title={copy('common.undo')}
             variant="secondary"
             onPress={() => void verifyContact(peerId, false)}
           />
@@ -86,7 +86,7 @@ export default function VerifyScreen() {
       ) : (
         <View style={{ gap: Spacing.md }}>
           <Button
-            title="They match — mark verified"
+            title={copy('verify.match')}
             onPress={async () => {
               await verifyContact(peerId, true);
               router.back();
@@ -95,7 +95,7 @@ export default function VerifyScreen() {
           {/* Destructive styling on "they do not match" is correct: if the
               digits differ, someone is sitting between the two of you, and the
               calm-looking option is the dangerous one. */}
-          <Button title="They do not match" variant="danger" onPress={() => router.back()} />
+          <Button title={copy('verify.noMatch')} variant="danger" onPress={() => router.back()} />
         </View>
       )}
     </Screen>

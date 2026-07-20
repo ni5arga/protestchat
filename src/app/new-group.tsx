@@ -18,11 +18,13 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Button, Card, Empty, Field, Input, Notice, Screen, Tag } from '@/components/ui';
 import { Radius, Spacing, TAP_TARGET, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 import { useApp } from '@/lib/app-state';
 import { MAX_GROUP_MEMBERS } from '@/lib/conversation';
 
 export default function NewGroupScreen() {
   const t = useTheme();
+  const { t: copy, plural } = useI18n();
   const router = useRouter();
   const { contacts, createGroup } = useApp();
 
@@ -35,7 +37,7 @@ export default function NewGroupScreen() {
     setSelected((prev) => {
       if (prev.includes(publicId)) return prev.filter((p) => p !== publicId);
       if (prev.length >= MAX_GROUP_MEMBERS) {
-        setError(`Groups are limited to ${MAX_GROUP_MEMBERS} people over Bluetooth.`);
+        setError(copy('group.limit', { count: MAX_GROUP_MEMBERS }));
         return prev;
       }
       return [...prev, publicId];
@@ -56,35 +58,34 @@ export default function NewGroupScreen() {
       contentStyle={{ gap: Spacing.xl }}
       footer={
         <Button
-          title={`Create group with ${selected.length} ${selected.length === 1 ? 'person' : 'people'}`}
+          title={plural('group.create', selected.length)}
           onPress={() => void onCreate()}
           disabled={selected.length === 0}
         />
       }>
       <View style={{ gap: Spacing.sm }}>
-        <Text style={[Type.hero, { color: t.text }]}>New group</Text>
+        <Text style={[Type.hero, { color: t.text }]}>{copy('group.title')}</Text>
         <Text style={[Type.body, { color: t.textMuted }]}>
-          Each message is sealed separately for every member, so there is no shared key to leak —
-          and a group of ten sends ten copies over the radio.
+          {copy('group.detail')}
         </Text>
       </View>
 
       <Card>
-        <Field label="Group name">
-          <Input value={name} onChangeText={setName} placeholder="Legal support" autoFocus />
+        <Field label={copy('group.name')}>
+          <Input value={name} onChangeText={setName} placeholder={copy('group.namePlaceholder')} autoFocus />
         </Field>
       </Card>
 
       <View style={{ gap: Spacing.md }}>
         <Text style={[Type.label, { color: t.textMuted }]}>
-          MEMBERS · {selected.length} OF {MAX_GROUP_MEMBERS}
+          {copy('group.membersCount', { selected: selected.length, maximum: MAX_GROUP_MEMBERS }).toUpperCase()}
         </Text>
 
         {contacts.length === 0 ? (
           <Card>
             <Empty
-              title="No contacts yet"
-              detail="A group can only contain people you have already swapped codes with in person. Add someone first."
+              title={copy('group.noContactsTitle')}
+              detail={copy('group.noContactsDetail')}
             />
           </Card>
         ) : (
@@ -97,7 +98,7 @@ export default function NewGroupScreen() {
                   onPress={() => toggle(c.publicId)}
                   accessibilityRole="checkbox"
                   accessibilityState={{ checked: on }}
-                  accessibilityLabel={`${c.name}. ${c.verified ? 'Verified' : 'Not verified'}.`}
+                  accessibilityLabel={copy(c.verified ? 'home.contactA11y.verified' : 'home.contactA11y.unverified', { name: c.name })}
                   style={({ pressed }) => [
                     styles.member,
                     {
@@ -125,7 +126,7 @@ export default function NewGroupScreen() {
                   </Text>
                   <Tag
                     tone={c.verified ? 'ok' : 'caution'}
-                    label={c.verified ? 'Verified' : 'Unverified'}
+                    label={c.verified ? copy('common.verified') : copy('common.unverified')}
                   />
                 </Pressable>
               );
@@ -143,17 +144,15 @@ export default function NewGroupScreen() {
       {unverifiedSelected > 0 && (
         <Notice
           tone="caution"
-          title={`${unverifiedSelected} unverified ${unverifiedSelected === 1 ? 'member' : 'members'}`}>
+          title={plural('group.unverifiedTitle', unverifiedSelected)}>
           <Text style={[Type.callout, { color: t.text }]}>
-            You have not compared safety numbers with everyone here. If any of those codes came
-            from someone impersonating them, that person reads this group.
+            {copy('group.unverifiedDetail')}
           </Text>
         </Notice>
       )}
 
       <Text style={[Type.caption, { color: t.textMuted }]}>
-        Membership is stored only on your phone. Other members see the messages, not the member
-        list, and their idea of who is in this group may differ from yours.
+        {copy('group.membershipDetail')}
       </Text>
     </Screen>
   );

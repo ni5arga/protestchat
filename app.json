@@ -7,6 +7,14 @@
     "icon": "./assets/images/icon.png",
     "scheme": "protestchat",
     "userInterfaceStyle": "automatic",
+    "locales": {
+      "en": "./locales/en.json",
+      "hi": "./locales/hi.json",
+      "bn": "./locales/bn.json",
+      "mr": "./locales/mr.json",
+      "te": "./locales/te.json",
+      "ta": "./locales/ta.json"
+    },
     "ios": {
       "icon": "./assets/expo.icon",
       "infoPlist": {
@@ -64,7 +72,16 @@
           }
         }
       ],
-      "./plugins/withDevelopmentTeam"
+      "./plugins/withDevelopmentTeam",
+      [
+        "expo-localization",
+        {
+          "supportedLocales": {
+            "ios": ["en", "hi", "bn", "mr", "te", "ta"],
+            "android": ["en", "hi", "bn", "mr", "te", "ta"]
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

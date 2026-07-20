@@ -1,0 +1,7 @@
+{
+  "ios": {
+  "NSBluetoothAlwaysUsageDescription": "protestchat uses Bluetooth Low Energy to find nearby phones and pass messages between them directly, so they travel without a cell tower or the internet. Nothing about you is broadcast: the Bluetooth identifier is random and changes every 15 minutes.",
+  "NSBluetoothPeripheralUsageDescription": "protestchat advertises over Bluetooth Low Energy so nearby phones can find this one and relay messages without the internet. The advertised identifier is random and changes every 15 minutes.",
+  "NSLocalNetworkUsageDescription": "protestchat uses the local network to exchange messages directly with nearby devices."
+  }
+}

@@ -31,6 +31,7 @@ import Animated, {
 import { Duration, Radius, Spacing, Type, type ToneName } from '@/constants/theme';
 import { useMotion } from '@/hooks/use-motion';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 import type { MeshStatus } from '@/lib/mesh';
 
 type Described = {
@@ -43,23 +44,23 @@ type Described = {
   searching: boolean;
 };
 
-function describe(status: MeshStatus): Described {
+function describe(status: MeshStatus, i18n: ReturnType<typeof useI18n>): Described {
+  const { t, plural } = i18n;
   if (!status.radioAvailable) {
     return {
       tone: 'danger',
-      state: 'No radio',
-      headline: 'No mesh radio',
-      detail:
-        'This build cannot use Bluetooth. Install the phone app to connect to people nearby.',
+      state: t('status.noRadioState'),
+      headline: t('status.noRadioTitle'),
+      detail: t('status.noRadioDetail'),
       searching: false,
     };
   }
   if (!status.running) {
     return {
       tone: 'danger',
-      state: 'Off',
-      headline: 'Radio off',
-      detail: 'You are not reachable and cannot pass messages for anyone.',
+      state: t('status.offState'),
+      headline: t('status.offTitle'),
+      detail: t('status.offDetail'),
       searching: false,
     };
   }
@@ -68,33 +69,34 @@ function describe(status: MeshStatus): Described {
   if (connected > 0) {
     return {
       tone: 'ok',
-      state: 'Connected',
-      headline: connected === 1 ? 'Connected to 1 phone' : `Connected to ${connected} phones`,
-      detail: 'Messages can go out now — no internet needed.',
+      state: t('status.connectedState'),
+      headline: plural('status.connectedTitle', connected),
+      detail: t('status.connectedDetail'),
       searching: false,
     };
   }
   if (status.peers.length > 0) {
     return {
       tone: 'caution',
-      state: 'Connecting',
-      headline: 'Connecting…',
-      detail: `Found ${status.peers.length} nearby. Stay put for a moment.`,
+      state: t('status.connectingState'),
+      headline: t('status.connectingTitle'),
+      detail: plural('status.foundNearby', status.peers.length),
       searching: true,
     };
   }
   return {
     tone: 'caution',
-    state: 'Searching',
-    headline: 'Looking for people nearby',
-    detail: 'Keep the app open. Move closer to others to connect.',
+    state: t('status.searchingState'),
+    headline: t('status.searchingTitle'),
+    detail: t('status.searchingDetail'),
     searching: true,
   };
 }
 
 export function StatusBanner({ status }: { status: MeshStatus }) {
   const t = useTheme();
-  const { tone, state, headline, detail, searching } = describe(status);
+  const i18n = useI18n();
+  const { tone, state, headline, detail, searching } = describe(status, i18n);
   const c = t.tone[tone];
 
   // Connected is the one settled, affirmative state — it earns a quieter, more
@@ -105,17 +107,16 @@ export function StatusBanner({ status }: { status: MeshStatus }) {
 
   const carrying =
     status.carrying > 0
-      ? `Carrying ${status.carrying} sealed ${
-          status.carrying === 1 ? 'message' : 'messages'
-        } for other people. You cannot read them.`
+      ? i18n.plural('status.carrying', status.carrying)
       : null;
+  const radioError = status.lastError ? i18n.t('status.unknownError') : null;
 
   return (
     <View
       accessibilityRole="summary"
       // Screen readers get the state word first, then the sentence — the same
       // order a sighted user reads it in.
-      accessibilityLabel={[state + '.', headline + '.', detail, carrying, status.lastError]
+      accessibilityLabel={[state + '.', headline + '.', detail, carrying, radioError]
         .filter(Boolean)
         .join(' ')}
       style={[
@@ -135,11 +136,11 @@ export function StatusBanner({ status }: { status: MeshStatus }) {
 
       <Text style={[Type.body, { color: t.textMuted, marginTop: Spacing.sm }]}>{detail}</Text>
 
-      {(carrying || status.lastError) && (
+      {(carrying || radioError) && (
         <View style={[styles.meta, { borderColor: t.border }]}>
           {!!carrying && <Text style={[Type.caption, { color: t.textMuted }]}>{carrying}</Text>}
-          {!!status.lastError && (
-            <Text style={[Type.caption, { color: t.tone.danger.fg }]}>{status.lastError}</Text>
+          {!!radioError && (
+            <Text style={[Type.caption, { color: t.tone.danger.fg }]}>{radioError}</Text>
           )}
         </View>
       )}

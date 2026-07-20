@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui';
 import { Radius, Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 import {
   getRadioAccessStatus,
   openAppSettings,
@@ -19,43 +20,45 @@ type GateCopy = {
   action?: string;
 };
 
-function copyFor(status: BleStatus | null, appReady: boolean): GateCopy {
+function copyFor(
+  status: BleStatus | null,
+  appReady: boolean,
+  copy: ReturnType<typeof useI18n>['t'],
+): GateCopy {
   if (!appReady) {
-    return { title: 'Preparing securely', detail: 'Loading your identity and local messages.' };
+    return { title: copy('radio.preparingTitle'), detail: copy('radio.preparingDetail') };
   }
   switch (status?.state) {
     case 'unauthorized':
       return {
-        title: 'Bluetooth permission required',
-        detail:
-          'Nearby messaging cannot work without Bluetooth access. Allow it in Settings, then return here.',
-        action: 'Open Settings',
+        title: copy('radio.permissionTitle'),
+        detail: copy('radio.permissionDetail'),
+        action: copy('radio.openSettings'),
       };
     case 'poweredOff':
       return {
-        title: 'Turn on Bluetooth',
+        title: copy('radio.powerTitle'),
         detail:
           Platform.OS === 'ios'
-            ? 'Turn Bluetooth on in Control Centre or Settings. The app will unlock automatically.'
-            : 'Approve the system Bluetooth prompt. The app will unlock automatically when Bluetooth is on.',
-        action: Platform.OS === 'ios' ? 'Open Settings' : 'Turn on Bluetooth',
+            ? copy('radio.powerIosDetail')
+            : copy('radio.powerAndroidDetail'),
+        action: Platform.OS === 'ios' ? copy('radio.openSettings') : copy('radio.powerAction'),
       };
     case 'locationOff':
       return {
-        title: 'Turn on Location Services',
-        detail:
-          'Android 11 and older hide Bluetooth scan results while Location Services is off. No location data is stored or shared.',
-        action: 'Open Location Settings',
+        title: copy('radio.locationTitle'),
+        detail: copy('radio.locationDetail'),
+        action: copy('radio.locationAction'),
       };
     case 'unsupported':
       return {
-        title: 'Bluetooth unavailable',
-        detail: status.message || 'This phone cannot run the nearby Bluetooth mesh.',
+        title: copy('radio.unavailableTitle'),
+        detail: copy('radio.unavailableDetail'),
       };
     case 'resetting':
-      return { title: 'Bluetooth is restarting', detail: 'Keep this screen open for a moment.' };
+      return { title: copy('radio.restartingTitle'), detail: copy('radio.restartingDetail') };
     default:
-      return { title: 'Checking Bluetooth', detail: 'Bluetooth is required for nearby messaging.' };
+      return { title: copy('radio.checkingTitle'), detail: copy('radio.checkingDetail') };
   }
 }
 
@@ -69,6 +72,7 @@ export function RadioAccessGate({
   children: ReactNode;
 }) {
   const t = useTheme();
+  const { t: copyText } = useI18n();
   const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<BleStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -139,7 +143,7 @@ export function RadioAccessGate({
 
   if (appReady && status?.state === 'ready' && admitted) return children;
 
-  const copy = copyFor(status, appReady);
+  const copy = copyFor(status, appReady, copyText);
   const openSettings = status?.state === 'unauthorized' ||
     (Platform.OS === 'ios' && status?.state === 'poweredOff');
 

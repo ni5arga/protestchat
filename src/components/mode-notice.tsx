@@ -27,6 +27,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Spacing, TAP_TARGET, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 import type { ConversationInfo } from '@/lib/conversation';
 
 /**
@@ -34,23 +35,24 @@ import type { ConversationInfo } from '@/lib/conversation';
  * glance with no colour perception at all, still ranks the four modes
  * correctly: NOT PRIVATE > SHARED PASSPHRASE > NOT VERIFIED > ENCRYPTED.
  */
-function eyebrowFor(info: ConversationInfo): string {
+function eyebrowFor(info: ConversationInfo, copy: ReturnType<typeof useI18n>['t']): string {
   switch (info.mode) {
     case 'public':
-      return 'Not private';
+      return copy('mode.notPrivate');
     case 'channel':
-      return 'Shared passphrase';
+      return copy('mode.sharedPassphrase');
     case 'group':
-      return 'Encrypted to members';
+      return copy('mode.encryptedMembers');
     case 'direct':
-      return info.tone === 'ok' ? 'Encrypted' : 'Not verified';
+      return info.tone === 'ok' ? copy('mode.encrypted') : copy('mode.notVerified');
   }
 }
 
 export function ModeNotice({ info, onPress }: { info: ConversationInfo; onPress?: () => void }) {
   const t = useTheme();
+  const { t: copy } = useI18n();
   const c = t.tone[info.tone];
-  const eyebrow = eyebrowFor(info);
+  const eyebrow = eyebrowFor(info, copy);
 
   // Only public broadcast gets the solid fill. Reserving it for exactly one
   // mode is what keeps it meaning something — a red band that shows up on
@@ -69,7 +71,7 @@ export function ModeNotice({ info, onPress }: { info: ConversationInfo; onPress?
       </Text>
       {!!onPress && (
         <Text style={[Type.label, { color: fg, marginTop: Spacing.xs }]}>
-          CHECK THE SAFETY NUMBER ›
+          {copy('mode.checkSafetyNumber').toUpperCase()}
         </Text>
       )}
     </View>
@@ -106,7 +108,7 @@ export function ModeNotice({ info, onPress }: { info: ConversationInfo; onPress?
     <Pressable
       {...a11y}
       accessibilityRole="button"
-      accessibilityHint="Opens the safety number check"
+      accessibilityHint={copy('mode.openSafetyHint')}
       onPress={onPress}
       style={({ pressed }) => [frame, { opacity: pressed ? 0.8 : 1 }]}>
       {body}

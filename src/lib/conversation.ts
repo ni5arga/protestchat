@@ -14,6 +14,7 @@
  */
 
 import type { Channel, Group } from './db';
+import type { Translator } from '@/i18n/core';
 
 export type ConversationMode = 'public' | 'channel' | 'group' | 'direct';
 
@@ -32,7 +33,9 @@ export type ConversationInfo = {
 export function describeConversation(
   conversationId: string,
   ctx: { channels: Channel[]; groups: Group[]; contactName?: string; verified?: boolean },
+  i18n: Translator,
 ): ConversationInfo {
+  const { t, plural } = i18n;
   if (conversationId.startsWith('#')) {
     const id = conversationId.slice(1);
     const channel = ctx.channels.find((c) => c.id === id);
@@ -40,11 +43,10 @@ export function describeConversation(
     if (channel?.kind === 'public') {
       return {
         mode: 'public',
-        title: 'Everyone nearby',
+        title: t('conversation.publicTitle'),
         // Blunt on purpose. "Not encrypted" means nothing to most people;
         // "police" is the concrete thing they are actually worried about.
-        warning:
-          'ANYONE nearby can read this, including police running this app. Never put names, plans or locations here.',
+        warning: t('conversation.publicWarning'),
         tone: 'danger',
         showSenders: true,
       };
@@ -53,8 +55,7 @@ export function describeConversation(
     return {
       mode: 'channel',
       title: `#${id}`,
-      warning:
-        'Anyone who knows this channel’s passphrase can read everything in it, including messages sent before they joined.',
+      warning: t('conversation.channelWarning'),
       tone: 'caution',
       showSenders: true,
     };
@@ -65,8 +66,8 @@ export function describeConversation(
     const n = group?.members.length ?? 0;
     return {
       mode: 'group',
-      title: group?.name ?? 'Group',
-      warning: `Encrypted separately to each of the ${n} ${n === 1 ? 'person' : 'people'} you added. Only they can read it.`,
+      title: group?.name ?? t('common.group'),
+      warning: plural('conversation.groupWarning', n),
       tone: 'ok',
       showSenders: true,
     };
@@ -74,10 +75,10 @@ export function describeConversation(
 
   return {
     mode: 'direct',
-    title: ctx.contactName ?? 'Chat',
+    title: ctx.contactName ?? t('common.chat'),
     warning: ctx.verified
-      ? 'Encrypted to this person only.'
-      : 'Not verified yet — anyone could be on the other end. Tap to check the safety number together, in person.',
+      ? t('conversation.directVerified')
+      : t('conversation.directUnverified'),
     tone: ctx.verified ? 'ok' : 'caution',
     showSenders: false,
   };

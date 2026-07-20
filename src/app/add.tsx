@@ -29,12 +29,14 @@ import QRCode from 'react-native-qrcode-svg';
 import { Button, Card, Field, Input, Screen } from '@/components/ui';
 import { Radius, Spacing, TAP_TARGET, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 import { useApp } from '@/lib/app-state';
 import { MAX_CONTACT_NAME_LENGTH, cleanContactName } from '@/lib/contact';
 import { CONTACT_CODE_PREFIX, decodeContactCode } from '@/lib/contact-code';
 
 export default function AddScreen() {
   const t = useTheme();
+  const { t: copy } = useI18n();
   const router = useRouter();
   const { width } = useWindowDimensions();
   const { displayName, contactCode, contacts, addContact } = useApp();
@@ -55,7 +57,7 @@ export default function AddScreen() {
   const accept = (raw: string) => {
     const parsed = decodeContactCode(raw);
     if (!parsed) {
-      setError('That is not a valid contact code.');
+      setError(copy('add.invalidCode'));
       handled.current = false;
       return;
     }
@@ -75,7 +77,7 @@ export default function AddScreen() {
     if (!pendingPublicId || saving) return;
     const chosen = cleanContactName(contactName);
     if (!chosen) {
-      setError('Give this person a name you will recognise.');
+      setError(copy('add.nameRequired'));
       return;
     }
     setSaving(true);
@@ -83,13 +85,13 @@ export default function AddScreen() {
     try {
       const ok = await addContact(pendingCode, chosen);
       if (!ok) {
-        setError('That contact code is no longer valid.');
+        setError(copy('add.codeExpired'));
         setSaving(false);
         return;
       }
       router.back();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save this person.');
+    } catch {
+      setError(copy('add.saveFailed'));
       setSaving(false);
     }
   };
@@ -98,25 +100,24 @@ export default function AddScreen() {
     const existing = contacts.some((contact) => contact.publicId === pendingPublicId);
     return (
       <Screen contentStyle={{ gap: Spacing.xl }}>
-        <Stack.Screen options={{ title: existing ? 'Rename person' : 'Name this person' }} />
+        <Stack.Screen options={{ title: existing ? copy('add.renameTitle') : copy('add.nameTitle') }} />
 
         <Text style={[Type.body, { color: t.textMuted }]}>
-          Choose a name you will recognise later. It stays only on this phone and is never sent to
-          them or anyone nearby.
+          {copy('add.nameInstruction')}
         </Text>
 
         <Card style={{ gap: Spacing.lg }}>
           <Field
-            label="Name on this phone"
-            hint="Use a nickname or role, not necessarily a real name.">
+            label={copy('add.nameLabel')}
+            hint={copy('add.nameHint')}>
             <Input
               value={contactName}
               onChangeText={(value) => {
                 setContactName(value);
                 setError(null);
               }}
-              accessibilityLabel="Name on this phone"
-              placeholder="Medic at north gate"
+              accessibilityLabel={copy('add.nameLabel')}
+              placeholder={copy('add.namePlaceholder')}
               autoCapitalize="words"
               maxLength={MAX_CONTACT_NAME_LENGTH}
               autoFocus
@@ -133,14 +134,14 @@ export default function AddScreen() {
             </Text>
           )}
           <Button
-            title={saving ? 'Saving…' : existing ? 'Save new name' : 'Save person'}
+            title={saving ? copy('add.saving') : existing ? copy('add.saveNewName') : copy('add.savePerson')}
             onPress={() => void save()}
             disabled={!cleanContactName(contactName) || saving}
           />
         </Card>
 
         <Button
-          title="Use a different code"
+          title={copy('add.differentCode')}
           variant="quiet"
           disabled={saving}
           onPress={() => {
@@ -170,7 +171,7 @@ export default function AddScreen() {
 
       {mode === 'show' ? (
         <View style={{ alignItems: 'center', gap: Spacing.lg }}>
-          <Text style={[Type.label, { color: t.textMuted }]}>YOUR CODE</Text>
+          <Text style={[Type.label, { color: t.textMuted }]}>{copy('add.yourCode').toUpperCase()}</Text>
           <Text style={[Type.hero, { color: t.text }]} numberOfLines={1}>
             {displayName}
           </Text>
@@ -184,15 +185,14 @@ export default function AddScreen() {
           </View>
 
           <Text style={[Type.body, { color: t.text, textAlign: 'center', maxWidth: 340 }]}>
-            Let the other person scan this while you are standing next to each other.
+            {copy('add.inPersonInstruction')}
           </Text>
           <Text style={[Type.callout, { color: t.textMuted, textAlign: 'center', maxWidth: 340 }]}>
-            Being in the same place is what makes it safe. Nothing here checks who anyone is —
-            you do, by being there.
+            {copy('add.inPersonDetail')}
           </Text>
 
           <Button
-            title="Copy code instead"
+            title={copy('add.copyCode')}
             variant="quiet"
             onPress={() => void Clipboard.setStringAsync(myCode)}
           />
@@ -218,29 +218,28 @@ export default function AddScreen() {
             ) : (
               <View style={styles.fallback}>
                 <Text style={[Type.body, { color: t.text, textAlign: 'center' }]}>
-                  Camera access is off
+                  {copy('add.cameraOff')}
                 </Text>
                 <Text
                   style={[
                     Type.callout,
                     { color: t.textMuted, textAlign: 'center', marginTop: Spacing.sm },
                   ]}>
-                  You can still paste their code below, but only do that if you got it from them
-                  in person.
+                  {copy('add.cameraOffDetail')}
                 </Text>
               </View>
             )}
           </View>
           <Text style={[Type.body, { color: t.text, textAlign: 'center' }]}>
-            Point this at the other phone’s code.
+            {copy('add.pointCamera')}
           </Text>
         </View>
       )}
 
       <Card style={{ gap: Spacing.md }}>
         <Field
-          label="Or paste their code"
-          hint="A code that reached you through another app could have been swapped on the way. Prefer the camera.">
+          label={copy('add.orPaste')}
+          hint={copy('add.pasteHint')}>
           <Input
             value={typed}
             onChangeText={(v) => {
@@ -248,7 +247,7 @@ export default function AddScreen() {
               setError(null);
             }}
             placeholder="protestchat:…"
-            accessibilityLabel="Paste their contact code"
+            accessibilityLabel={copy('add.pasteCodeA11y')}
             multiline
             style={{ minHeight: 84 }}
           />
@@ -259,7 +258,7 @@ export default function AddScreen() {
           </Text>
         )}
         <Button
-          title="Add person"
+          title={copy('add.addPerson')}
           variant="secondary"
           onPress={() => accept(typed)}
           disabled={!typed.trim()}
@@ -278,9 +277,10 @@ function Segmented({
   onChange: (v: 'show' | 'scan') => void;
 }) {
   const t = useTheme();
+  const { t: copy } = useI18n();
   const options: { key: 'show' | 'scan'; label: string }[] = [
-    { key: 'show', label: 'My code' },
-    { key: 'scan', label: 'Scan theirs' },
+    { key: 'show', label: copy('add.myCode') },
+    { key: 'scan', label: copy('add.scanTheirs') },
   ];
 
   return (

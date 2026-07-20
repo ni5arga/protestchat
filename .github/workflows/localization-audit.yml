@@ -1,0 +1,38 @@
+name: Localization audit
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit merged translations
+    if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out merged main
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit localization
+        run: npm run i18n:check
+
+      - name: Validate translation catalogs
+        run: npm test -- --test-name-pattern='language resolution|translation catalogs'

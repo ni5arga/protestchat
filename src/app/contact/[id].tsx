@@ -5,11 +5,13 @@ import { Text } from 'react-native';
 import { Button, Card, Empty, Field, Input, Screen } from '@/components/ui';
 import { Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 import { useApp } from '@/lib/app-state';
 import { MAX_CONTACT_NAME_LENGTH, cleanContactName } from '@/lib/contact';
 
 export default function ContactScreen() {
   const t = useTheme();
+  const { t: copy } = useI18n();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const publicId = decodeURIComponent(id ?? '');
@@ -28,8 +30,8 @@ export default function ContactScreen() {
     try {
       await renameContact(contact.publicId, chosen);
       router.back();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save the name.');
+    } catch {
+      setError(copy('contact.saveFailed'));
       setSaving(false);
     }
   };
@@ -37,15 +39,11 @@ export default function ContactScreen() {
   if (!ready || !contact) {
     return (
       <Screen contentStyle={{ flexGrow: 1, justifyContent: 'center' }}>
-        <Stack.Screen options={{ title: 'Person' }} />
+        <Stack.Screen options={{ title: copy('contact.person') }} />
         <Empty
-          title={ready ? 'Person not found' : 'Starting up…'}
-          detail={
-            ready
-              ? 'This person may have been removed from this phone.'
-              : 'Loading the people stored on this phone.'
-          }
-          action={ready ? 'Go back' : undefined}
+          title={ready ? copy('contact.notFound') : copy('common.starting')}
+          detail={ready ? copy('contact.removedDetail') : copy('contact.loadingDetail')}
+          action={ready ? copy('contact.goBack') : undefined}
           onAction={ready ? () => router.back() : undefined}
         />
       </Screen>
@@ -54,24 +52,23 @@ export default function ContactScreen() {
 
   return (
     <Screen contentStyle={{ gap: Spacing.xl }}>
-      <Stack.Screen options={{ title: 'Edit person' }} />
+      <Stack.Screen options={{ title: copy('contact.editTitle') }} />
 
       <Text style={[Type.body, { color: t.textMuted }]}>
-        This name is stored only on your phone. Changing it does not notify the other person or
-        change whether you have verified them.
+        {copy('contact.nameInstruction')}
       </Text>
 
       <Card style={{ gap: Spacing.lg }}>
         <Field
-          label="Name on this phone"
-          hint="Use a nickname or role you will recognise quickly.">
+          label={copy('add.nameLabel')}
+          hint={copy('contact.nameHint')}>
           <Input
             value={name}
             onChangeText={(value) => {
               setDraft(value);
               setError(null);
             }}
-            accessibilityLabel="Name on this phone"
+            accessibilityLabel={copy('add.nameLabel')}
             autoCapitalize="words"
             maxLength={MAX_CONTACT_NAME_LENGTH}
             autoFocus
@@ -88,7 +85,7 @@ export default function ContactScreen() {
           </Text>
         )}
         <Button
-          title={saving ? 'Saving…' : 'Save name'}
+          title={saving ? copy('add.saving') : copy('contact.saveName')}
           onPress={() => void save()}
           disabled={!chosen || chosen === contact.name || saving}
         />

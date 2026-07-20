@@ -5,11 +5,21 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { Colors, Type } from '@/constants/theme';
 import { useIsDark } from '@/hooks/use-theme';
+import { I18nProvider, useI18n } from '@/i18n/provider';
 import { AppProvider } from '@/lib/app-state';
 
 export default function RootLayout() {
+  return (
+    <I18nProvider>
+      <LocalizedLayout />
+    </I18nProvider>
+  );
+}
+
+function LocalizedLayout() {
   const isDark = useIsDark();
   const t = isDark ? Colors.dark : Colors.light;
+  const { t: copy } = useI18n();
 
   return (
     <SafeAreaProvider>
@@ -46,18 +56,18 @@ export default function RootLayout() {
           <Stack.Screen name="contact/[id]" options={{ title: 'Edit person' }} />
           <Stack.Screen
             name="add"
-            options={{ title: 'Add a person', presentation: 'modal', animation: 'slide_from_bottom' }}
+            options={{ title: copy('nav.addPerson'), presentation: 'modal', animation: 'slide_from_bottom' }}
           />
-          <Stack.Screen name="verify/[id]" options={{ title: 'Verify' }} />
+          <Stack.Screen name="verify/[id]" options={{ title: copy('nav.verify') }} />
           <Stack.Screen
             name="join-channel"
-            options={{ title: 'Join a channel', presentation: 'modal', animation: 'slide_from_bottom' }}
+            options={{ title: copy('nav.joinChannel'), presentation: 'modal', animation: 'slide_from_bottom' }}
           />
           <Stack.Screen
             name="new-group"
-            options={{ title: 'New group', presentation: 'modal', animation: 'slide_from_bottom' }}
+            options={{ title: copy('nav.newGroup'), presentation: 'modal', animation: 'slide_from_bottom' }}
           />
-          <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+          <Stack.Screen name="settings" options={{ title: copy('nav.settings') }} />
         </Stack>
         </AppProvider>
       </KeyboardProvider>

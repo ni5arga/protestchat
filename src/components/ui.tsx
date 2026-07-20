@@ -31,6 +31,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Radius, Spacing, TAP_TARGET, Type, type ToneColors, type ToneName } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/i18n/provider';
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -238,6 +239,7 @@ export function Row({
   unread?: number;
 }) {
   const t = useTheme();
+  const { plural } = useI18n();
   const hasUnread = unread > 0;
   const hasMeta = !!tag || hasUnread;
   return (
@@ -245,7 +247,7 @@ export function Row({
       accessibilityRole={onPress ? 'button' : undefined}
       // Fold the count into the label so a screen reader announces it too.
       accessibilityLabel={
-        hasUnread ? `${accessibilityLabel ?? title}. ${unread} unread.` : accessibilityLabel
+        hasUnread ? `${accessibilityLabel ?? title}. ${plural('a11y.unread', unread)}` : accessibilityLabel
       }
       onPress={onPress}
       style={({ pressed }) => [
@@ -431,6 +433,7 @@ export function SectionHeader({
   onAction?: () => void;
 }) {
   const t = useTheme();
+  const { t: copy } = useI18n();
   return (
     <View style={styles.sectionHeader}>
       <Text
@@ -445,7 +448,7 @@ export function SectionHeader({
           hitSlop={20}
           onPress={onAction}
           accessibilityRole="button"
-          accessibilityLabel={`${action} ${title.toLowerCase()}`}>
+          accessibilityLabel={copy('a11y.sectionAction', { action, section: title })}>
           {({ pressed }) => (
             <Text style={[Type.label, { color: t.accent, opacity: pressed ? 0.6 : 1 }]}>
               {action.toUpperCase()}

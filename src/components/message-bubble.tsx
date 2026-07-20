@@ -18,6 +18,8 @@ import Animated, { FadeIn } from 'react-native-reanimated';
 
 import { Duration, Radius, Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { formatClockTime } from '@/i18n/core';
+import { useI18n } from '@/i18n/provider';
 import type { Message } from '@/lib/db';
 
 /** Messages closer together than this from one sender are drawn as one block. */
@@ -38,23 +40,16 @@ export function groupsWithPrevious(
   return m.sentAt - previous.sentAt < GROUP_WINDOW_MS;
 }
 
-function clockTime(ms: number): string {
-  // Protocol rounds timestamps down to the minute, so showing seconds would be
-  // inventing precision the wire format deliberately threw away.
-  const d = new Date(ms);
-  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-function stateLabel(m: Message): string {
+function stateLabel(m: Message, copy: ReturnType<typeof useI18n>['t']): string {
   switch (m.state) {
     case 'queued':
-      return 'Waiting for someone in range';
+      return copy('message.waiting');
     case 'sent':
-      return 'Sent';
+      return copy('message.sent');
     case 'delivered':
-      return 'Delivered';
+      return copy('message.delivered');
     case 'failed':
-      return 'Failed';
+      return copy('message.failed');
   }
 }
 
@@ -73,6 +68,7 @@ export function MessageBubble({
   last: boolean;
 }) {
   const t = useTheme();
+  const { t: copy, language } = useI18n();
   const mine = message.outgoing;
   const failed = message.state === 'failed';
 
@@ -83,7 +79,7 @@ export function MessageBubble({
     borderBottomRightRadius: mine ? Radius.sm : Radius.lg,
   };
 
-  const meta = [last ? clockTime(message.sentAt) : null, mine && last ? stateLabel(message) : null]
+  const meta = [last ? formatClockTime(message.sentAt, language) : null, mine && last ? stateLabel(message, copy) : null]
     .filter(Boolean)
     .join('  ·  ');
 
