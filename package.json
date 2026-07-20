@@ -57,7 +57,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "i18n:check": "node scripts/check-i18n.mjs",
-    "test": "node --experimental-strip-types --import ./scripts/ts-resolver.mjs --test 'src/lib/__tests__/*.test.ts'",
+    "test": "node --experimental-strip-types --import ./scripts/ts-resolver.mjs --test 'src/lib/__tests__/*.test.ts' 'src/trust/__tests__/*.test.ts'",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "doctor": "bash scripts/doctor.sh"
   },
