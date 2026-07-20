@@ -46,6 +46,14 @@ export const SERVICE_ID = 'org.protestchat.mesh.v1';
 /** Cap on envelopes offered per peer per encounter, so one greedy peer cannot drain us. */
 const MAX_SYNC_PER_PEER = 200;
 
+/**
+ * Hard ceiling on how many distinct envelopes we will ever serve one peer in a
+ * session, on top of the serve-once rule. Bounds a peer that keeps requesting
+ * genuinely new ids (e.g. by advertising a huge fake inventory) to at most our
+ * carry-cache worth of traffic, then goes quiet until it reconnects.
+ */
+const MAX_SERVED_PER_PEER = 600;
+
 export type MeshStatus = {
   running: boolean;
   radioAvailable: boolean;
@@ -83,6 +91,16 @@ export class MeshEngine {
 
   /** Peers' SPK/OTK publics we seal to. */
   private peerPrekeys = new PeerPrekeyBook();
+
+  /**
+   * Envelope ids already served to each peer this session, so a Request can
+   * never pull the same envelope twice. Without this, `handleRequest` answered
+   * every repeated request in full (200 envelopes × 30 KiB), giving a single
+   * in-range attacker >1000x bandwidth/battery amplification just by re-sending
+   * one small request. Cleared when the peer disconnects — a genuine peer that
+   * missed a delivery will re-sync on reconnect.
+   */
+  private servedToPeer = new Map<string, Set<string>>();
 
   /**
    * Optional hook after local OTK/SPK state changes so the app can persist.
@@ -183,6 +201,7 @@ export class MeshEngine {
       }),
       this.transport.on('disconnected', (id) => {
         this.connected.delete(id);
+        this.servedToPeer.delete(id);
         this.emit();
       }),
       this.transport.on('payload', (peerId, b64) => void this.ingest(peerId, b64)),
@@ -723,8 +742,22 @@ export class MeshEngine {
     const wanted = parseIdList(envelope.payload);
     if (!wanted) return;
 
-    const envelopes = await this.store.getEnvelopesByIds(wanted.slice(0, MAX_SYNC_PER_PEER));
+    // Only serve envelope ids we have not already sent this peer this session.
+    // This is the whole fix for the request-amplification vector: a repeated
+    // request for the same ids now yields nothing instead of a full re-send.
+    let served = this.servedToPeer.get(peerId);
+    if (!served) this.servedToPeer.set(peerId, (served = new Set()));
+
+    if (served.size >= MAX_SERVED_PER_PEER) return;
+    const fresh = wanted.slice(0, MAX_SYNC_PER_PEER).filter((id) => !served.has(id));
+    if (fresh.length === 0) return;
+
+    const envelopes = await this.store.getEnvelopesByIds(fresh);
     for (const e of envelopes) {
+      if (served.size >= MAX_SERVED_PER_PEER) break;
+      // Mark served regardless of hop eligibility, so an id we decline to
+      // forward is not re-requestable either.
+      served.add(toBase64(e.id));
       if (e.hopCount >= e.maxHops) continue;
       await this.transport
         .send(peerId, toBase64(encodeEnvelope({ ...e, hopCount: e.hopCount + 1 })))

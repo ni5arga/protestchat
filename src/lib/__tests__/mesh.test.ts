@@ -392,6 +392,47 @@ describe('dedup', () => {
       // "we move at nine" resurfacing later is exactly the danger.
       assert.equal(inbox(C).length, 1, 'replay was delivered as a duplicate');
     }));
+
+  it('serves each envelope to a peer once, so a repeated request is not an amplifier', () =>
+    scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      // A is carrying one envelope: its own message queued for an absent C.
+      await A.engine.sendText(C.pub, 'hold this for me');
+      await world.settle();
+
+      world.connect('A', 'B');
+      await world.settle();
+      // Inventory sync already handed B the one envelope A carries.
+      assert.equal(B.store.envelopes.length, 1, 'initial sync did not deliver');
+
+      const ids = A.store.envelopes.map((e) => e.id);
+      const sentBefore = A.transport.sent.length;
+
+      // B replays the same Request three times, each wrapped in a fresh envelope
+      // id so the envelope-id dedup does not absorb it. Before the fix this made
+      // A re-send the whole requested set every single time — unbounded bandwidth
+      // amplification from one cheap request. A now records what it has served
+      // this peer and answers a repeat with nothing.
+      for (let i = 0; i < 3; i++) {
+        const request = encodeEnvelope({
+          version: PROTOCOL_VERSION,
+          type: EnvelopeType.Request,
+          id: fromBase64(randomId()),
+          createdAt: Date.now(),
+          ttlSeconds: 300,
+          hopCount: 0,
+          maxHops: 1,
+          payload: toUtf8(JSON.stringify(ids)),
+        });
+        world.transport('A').fire('payload', 'B', toBase64(request));
+        await world.settle();
+      }
+
+      assert.equal(
+        A.transport.sent.length,
+        sentBefore,
+        'A re-served already-delivered envelopes — request amplification is not bounded',
+      );
+    }));
 });
 
 describe('store and forward', () => {
