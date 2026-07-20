@@ -35,6 +35,14 @@ export const MAX_ENVELOPE_LEN = 30_000;
 export const TIME_GRANULARITY_MS = 60_000;
 
 /**
+ * The most hops any honest client will ever relay a message. An attacker can
+ * write 255 into the header, so decode clamps it: each hop is a chance to be
+ * observed, and a crafted envelope must not be allowed to circulate ~40x deeper
+ * and longer than the design allows (see DEFAULTS.maxHops).
+ */
+export const MAX_HOPS = 6;
+
+/**
  * A const object rather than a TS `enum`: enums emit a runtime object Metro
  * cannot tree-shake, and they are not strippable, which would put this file
  * out of reach of `npm test`.
@@ -127,7 +135,11 @@ export function decodeEnvelope(raw: Uint8Array): Envelope | null {
     createdAt,
     ttlSeconds,
     hopCount: raw[30],
-    maxHops: raw[31],
+    // Clamp, don't trust: a hostile peer can put 255 here to make every honest
+    // relay carry the envelope ~40x deeper than the 6-hop design cap. Clamping
+    // (rather than rejecting) still delivers a legitimately-shaped message while
+    // refusing to honour an inflated depth.
+    maxHops: Math.min(raw[31], MAX_HOPS),
     payload: raw.slice(HEADER_LEN),
   };
 }
@@ -270,9 +282,10 @@ export const DEFAULTS = {
   ttlSeconds: 6 * 3600,
   /**
    * Each hop is a chance to be observed, and the marginal reach past ~6 is
-   * small in a dense crowd where everyone is a relay anyway.
+   * small in a dense crowd where everyone is a relay anyway. decodeEnvelope
+   * clamps any inbound envelope to this same cap.
    */
-  maxHops: 6,
+  maxHops: MAX_HOPS,
 } as const;
 
 export const isExpired = (e: Envelope, now = Date.now()): boolean =>

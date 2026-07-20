@@ -15,6 +15,7 @@ import {
   DEFAULTS,
   EnvelopeType,
   HEADER_LEN,
+  MAX_HOPS,
   PROTOCOL_VERSION,
   TIME_GRANULARITY_MS,
   decodeBody,
@@ -99,6 +100,16 @@ describe('envelope decoding is hostile-input safe', () => {
     const raw = encodeEnvelope(sample());
     new DataView(raw.buffer, raw.byteOffset, raw.byteLength).setUint32(26, 0xffffffff);
     assert.equal(decodeEnvelope(raw), null);
+  });
+
+  it('clamps an inflated maxHops to the design cap', () => {
+    // An attacker writes 255 into the maxHops byte to make honest relays carry
+    // the envelope far deeper than the 6-hop cap. Decode must clamp it.
+    const raw = encodeEnvelope(sample());
+    raw[31] = 255;
+    const decoded = decodeEnvelope(raw);
+    assert.ok(decoded);
+    assert.equal(decoded.maxHops, MAX_HOPS);
   });
 
   it('rejects a zero TTL', () => {
