@@ -45,7 +45,9 @@ import { concat, fromBase64, fromUtf8, toBase64, toUtf8 } from './bytes';
 
 const KDF_INFO_SEAL = toUtf8('protestchat/v1/seal');
 const KDF_INFO_X25519 = toUtf8('protestchat/v1/x25519');
+const KDF_INFO_CHANNEL_BIND = toUtf8('protestchat/v1/channel-bind');
 const SIG_CONTEXT = toUtf8('protestchat/v1/sender-auth');
+const SAFETY_CONTEXT = toUtf8('protestchat/v1/safety');
 
 const EPH_LEN = 32;
 const NONCE_LEN = 24;
@@ -110,23 +112,67 @@ export function parsePublicId(publicId: string): PublicIdentity | null {
   }
 }
 
-/**
- * Short, human-comparable fingerprint. Two people read these aloud to each
- * other in person; if they match, there is no machine in the middle.
- * 60 bits — long enough that forging a match is not practical on a phone.
- */
-export function safetyNumber(a: PublicIdentity, b: PublicIdentity): string {
-  // Order-independent so both sides see the same digits.
-  const [first, second] =
-    a.publicId < b.publicId ? [a.publicId, b.publicId] : [b.publicId, a.publicId];
-  const digest = sha256(toUtf8(`${first}|${second}`));
+const SAFETY_ROUNDS = 5200; // iterated hash, à la Signal — slows any brute force
+const SAFETY_DIGITS_PER_KEY = 30;
 
+/**
+ * Per-key fingerprint: 30 unbiased decimal digits committing to ONE public key.
+ *
+ * The iterated hash binds the digits to this exact key. Because each half of a
+ * safety number commits to a fixed real key, an attacker at introduction must
+ * find a SECOND-PREIMAGE for it (~10^30 work), not a birthday collision on a
+ * combined value. That distinction is the whole point — see safetyNumber.
+ */
+function fingerprint(publicId: string): string {
+  const key = fromBase64(publicId);
+  let h = sha256(concat(SAFETY_CONTEXT, key));
+  for (let i = 0; i < SAFETY_ROUNDS; i++) h = sha256(concat(h, key));
+  return digitsFromHash(h, SAFETY_DIGITS_PER_KEY);
+}
+
+/**
+ * Unbiased base-10 digits from a hash stream. Rejection sampling (drop bytes
+ * >= 250, since 250 = 25*10) removes the modulo bias that `byte % 10` alone
+ * introduces — 256 % 10 = 6, so 0..5 would otherwise be slightly likelier.
+ */
+function digitsFromHash(seed: Uint8Array, count: number): string {
   let out = '';
-  for (let i = 0; i < 15; i++) {
-    if (i > 0 && i % 5 === 0) out += ' ';
-    out += (digest[i] % 10).toString();
+  let block = seed;
+  let i = 0;
+  while (out.length < count) {
+    if (i >= block.length) {
+      block = sha256(block);
+      i = 0;
+    }
+    const byte = block[i++];
+    if (byte < 250) out += (byte % 10).toString();
   }
   return out;
+}
+
+/**
+ * Safety number. Two people read these aloud to each other in person; if they
+ * match, there is no machine in the middle.
+ *
+ * It is two per-key fingerprints concatenated, 60 digits total, grouped in
+ * fives. Ordering by publicId only decides which fingerprint prints first, so
+ * both sides render the identical number.
+ *
+ * Why not a single hash of both keys (the old design): that value is
+ * order-independent AND fully attacker-chosen at introduction, so a MITM who
+ * supplies BOTH keys only needs a birthday collision (~2^25 work at the old
+ * 15-digit size) to make the two screens match. Committing each half to one
+ * FIXED real key turns that into a per-half second-preimage, which 30 digits
+ * (~2^99) puts out of reach.
+ */
+export function safetyNumber(a: PublicIdentity, b: PublicIdentity): string {
+  const [first, second] =
+    a.publicId < b.publicId ? [a.publicId, b.publicId] : [b.publicId, a.publicId];
+  const digits = fingerprint(first) + fingerprint(second);
+
+  const groups: string[] = [];
+  for (let i = 0; i < digits.length; i += 5) groups.push(digits.slice(i, i + 5));
+  return groups.join(' ');
 }
 
 // ---------------------------------------------------------------------------
@@ -326,13 +372,28 @@ export const PUBLIC_CHANNEL_NAME = 'public';
  * `open()` and `openWithKey()` be told apart by trial decryption alone without
  * any discriminator byte on the wire that would leak the mode to relays.
  */
+/**
+ * A one-way commitment to a channel key, safe to sign.
+ *
+ * Signing the raw key would be reckless; an HKDF of it is not, and it lets the
+ * signature name the exact channel without revealing the key.
+ */
+function channelBinding(key: Uint8Array): Uint8Array {
+  return hkdf(sha256, key, undefined, KDF_INFO_CHANNEL_BIND, 32);
+}
+
 export function sealToKey(sender: Identity, key: Uint8Array, body: Uint8Array): Uint8Array {
   const nonce = randomBytes(NONCE_LEN);
 
-  // The nonce is bound into the signature so a signature cannot be lifted out
-  // and replayed inside a different ciphertext under the same channel key.
+  // Sign over the channel binding as well as the nonce and body. Without the
+  // binding, the signed inner plaintext could be decrypted by any channel
+  // member and RE-ENCRYPTED under a different channel key (or the public
+  // broadcast key, which every install holds) with the same nonce, and it would
+  // still verify — laundering a private statement into another channel with
+  // valid authorship. Binding the signature to this key defeats that: the
+  // signature only verifies under the key it was sealed for.
   const signature = ed25519.sign(
-    concat(SIG_CONTEXT_CHANNEL, nonce, body),
+    concat(SIG_CONTEXT_CHANNEL, channelBinding(key), nonce, body),
     sender.edSecret,
   );
 
@@ -357,7 +418,13 @@ export function openWithKey(key: Uint8Array, sealed: Uint8Array): OpenedMessage 
     const signature = inner.subarray(64, 128);
     const body = inner.subarray(128);
 
-    if (!ed25519.verify(signature, concat(SIG_CONTEXT_CHANNEL, nonce, body), senderEd)) {
+    if (
+      !ed25519.verify(
+        signature,
+        concat(SIG_CONTEXT_CHANNEL, channelBinding(key), nonce, body),
+        senderEd,
+      )
+    ) {
       return null;
     }
 
