@@ -85,7 +85,7 @@ jobs:
 
       - name: Build release APK
         working-directory: android
-        run: ./gradlew :app:assembleRelease --no-daemon
+        run: ./gradlew :app:assembleRelease --build-cache --no-daemon
 
       - name: Stage artifact
         shell: bash
