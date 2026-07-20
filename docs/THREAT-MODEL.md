@@ -78,7 +78,7 @@ Three deliberate choices:
 
 | Exposed | Mitigation |
 |---|---|
-| Display name | Broadcast in the clear; app warns not to use a real name |
+| Display name | **Not exposed.** Local-only label; the BLE transport never advertises or transmits it (peers see only the rotating tag). Was previously advertised under Google Nearby; that path is gone. |
 | Message size | Padded to 256 B / 512 B / … / 16 KiB buckets |
 | Timestamp | Rounded down to 60 s |
 | Hop count | Visible, capped at 6 |
@@ -100,6 +100,12 @@ Three deliberate choices:
 7. **Channel passphrase strength.** No strength meter, no enforced minimum. At a protest passphrases spread by shouting and will be weak.
 
 ## Fixed
+
+- **Message replay (found 20 Jul 2026, security audit).** Dedup was only on the random outer envelope id, which a replay attacker simply regenerates — so a captured ciphertext, re-wrapped in a fresh envelope id, was re-decrypted and filed as a new message. A months-old "we move at nine" could be resurrected at will. Now each device also dedups on a hash of the *decrypted* body (`seen_messages` in `db.ts`), so an exact replay is dropped while genuine resends (fresh per-message id) are unaffected.
+
+- **Display name was documented as broadcast, but is not (found 20 Jul 2026, security audit).** Under the old Nearby transport the name was advertised; the BLE transport never transmits it (peers see only the rotating tag). The Settings hint and the metadata table above claimed it was "broadcast in the clear," a false statement about what the app leaks. Corrected in both.
+
+- **In-memory keys outlived a wipe (found 20 Jul 2026, security audit).** `mesh.stop()` cleared peers but left `identity` and cached channel keys live in the engine; panic wipe erased disk but the process still held the keys. `stop()` now drops those references. (JS cannot zero memory, so the seized-unlocked-phone case remains out of scope.)
 
 - **Android auto-backup was uploading the message database (found 20 Jul 2026).** `allowBackup` defaulted to true, so Android's automatic backup would copy the SQLite database — every message, contact and channel key — to the user's Google Drive. That silently recreated the exact thing this design exists to avoid: a copy on a third-party server, subject to subpoena, outliving the 6-hour TTL and surviving a panic wipe. Now `allowBackup: false` in `app.json`.
 

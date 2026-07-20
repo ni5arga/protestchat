@@ -64,6 +64,12 @@ export interface MeshStore {
   /** Returns true only the first time an id is presented. The dedup primitive. */
   markSeen(idB64: string): Promise<boolean>;
   hasSeen(idB64: string): Promise<boolean>;
+  /**
+   * Content-level dedup, keyed on a hash of the decrypted message rather than
+   * the outer envelope id. Returns true only the first time. Stops a captured
+   * ciphertext re-wrapped in a fresh envelope id from being delivered twice.
+   */
+  markMessageSeen(hashB64: string): Promise<boolean>;
   insertMessage(m: Message): Promise<void>;
   setMessageState(id: string, state: MessageState): Promise<void>;
   upsertContact(publicId: string, name: string): Promise<void>;
@@ -124,6 +130,7 @@ export function createMemoryStore(now: () => number = Date.now): MemoryStore {
   const messages = new Map<string, Message>();
   const contacts = new Map<string, { publicId: string; name: string }>();
   const seen = new Map<string, number>();
+  const seenMessages = new Map<string, number>();
   /**
    * messageId -> (publicId -> acked). Nested rather than one map under a joined
    * "id|id" key, because that needs a separator, and a separator is a thing two
@@ -137,6 +144,7 @@ export function createMemoryStore(now: () => number = Date.now): MemoryStore {
       const t = now();
       for (const [id, e] of envelopes) if (e.expiresAt <= t) envelopes.delete(id);
       for (const [id, at] of seen) if (at <= t - SEEN_RETENTION_MS) seen.delete(id);
+      for (const [h, at] of seenMessages) if (at <= t - SEEN_RETENTION_MS) seenMessages.delete(h);
     },
 
     async envelopeIds() {
@@ -180,6 +188,12 @@ export function createMemoryStore(now: () => number = Date.now): MemoryStore {
 
     async hasSeen(idB64) {
       return seen.has(idB64);
+    },
+
+    async markMessageSeen(hashB64) {
+      if (seenMessages.has(hashB64)) return false;
+      seenMessages.set(hashB64, now());
+      return true;
     },
 
     async insertMessage(m) {
