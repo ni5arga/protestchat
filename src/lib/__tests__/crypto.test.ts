@@ -10,6 +10,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
+
 import { toUtf8 } from '../bytes';
 import {
   PUBLIC_CHANNEL_KEY,
@@ -67,8 +69,32 @@ describe('safety numbers', () => {
     assert.notEqual(safetyNumber(pub(alice), pub(bob)), safetyNumber(pub(alice), pub(eve)));
   });
 
-  it('is 15 digits, human-groupable', () => {
-    assert.match(safetyNumber(pub(alice), pub(bob)), /^\d{5} \d{5} \d{5}$/);
+  it('is 60 digits in groups of five', () => {
+    // 60 digits (two per-key fingerprints of 30) so a MITM at introduction faces
+    // a per-half second-preimage, not a birthday collision on a combined value.
+    assert.match(safetyNumber(pub(alice), pub(bob)), /^(\d{5} ){11}\d{5}$/);
+    assert.equal(safetyNumber(pub(alice), pub(bob)).replace(/ /g, '').length, 60);
+  });
+
+  it("changing either party's key changes the number", () => {
+    // Each half commits to one real key, so swapping a key must move the digits
+    // — this is the property that makes an introduction MITM need a preimage.
+    assert.notEqual(safetyNumber(pub(alice), pub(bob)), safetyNumber(pub(eve), pub(bob)));
+    assert.notEqual(safetyNumber(pub(alice), pub(bob)), safetyNumber(pub(alice), pub(eve)));
+  });
+
+  it('digits are not visibly mod-10 biased', () => {
+    // Rejection sampling should keep the digit distribution roughly flat. Sample
+    // many numbers and assert no digit is wildly over/under-represented.
+    const counts = new Array(10).fill(0);
+    for (let i = 0; i < 40; i++) {
+      const other = identityFromSeed(new Uint8Array(32).fill((i % 250) + 1));
+      for (const ch of safetyNumber(pub(alice), pub(other)).replace(/ /g, '')) {
+        counts[Number(ch)]++;
+      }
+    }
+    const total = counts.reduce((a, b) => a + b, 0);
+    for (const c of counts) assert.ok(c > total / 10 / 2, `digit under-represented: ${counts}`);
   });
 });
 
@@ -208,6 +234,30 @@ describe('channels', () => {
       mutated[i] ^= 0xff;
       assert.equal(openWithKey(key, mutated), null, `byte ${i} flip accepted`);
     }
+  });
+
+  it('cannot transplant a signed message into another channel', () => {
+    // The exact laundering attack: Eve holds key (channel C1) and key2 (C2).
+    // She opens Alice's C1 message, lifts the inner signed plaintext, and
+    // re-encrypts it verbatim under key2 with the same nonce. Binding the
+    // signature to the channel key must make this fail to verify under key2 —
+    // otherwise C2 sees a valid "Alice said X" she never sent there, and the
+    // same trick launders any readable message into public broadcast.
+    const key2 = deriveChannelKey('gate5', 'correct horse battery staple');
+    const NONCE = 24;
+
+    const sealed = sealToKey(alice, key, toUtf8('for gate4 only'));
+    const nonce = sealed.subarray(0, NONCE);
+    const inner = xchacha20poly1305(key, nonce).decrypt(sealed.subarray(NONCE));
+
+    // Sanity: the lifted inner really is Alice's, readable under the original key.
+    assert.equal(openWithKey(key, sealed)?.sender.publicId, alice.publicId);
+
+    const transplanted = new Uint8Array(NONCE + inner.length + 16);
+    transplanted.set(nonce, 0);
+    transplanted.set(xchacha20poly1305(key2, nonce).encrypt(inner), NONCE);
+
+    assert.equal(openWithKey(key2, transplanted), null, 'transplant verified — signature not bound to channel');
   });
 
   it('does not leak the author to someone without the key', () => {

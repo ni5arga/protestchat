@@ -40,22 +40,21 @@ export default function VerifyScreen() {
       <View style={{ gap: Spacing.md }}>
         <Text style={[Type.hero, { color: t.text }]}>Check these numbers together</Text>
         <Text style={[Type.body, { color: t.textMuted }]}>
-          Hold your phones side by side. If both screens show the same fifteen digits, your
-          messages can only be read by the two of you.
+          Hold your phones side by side. If both screens show the same numbers, your messages can
+          only be read by the two of you.
         </Text>
       </View>
 
-      <View style={[styles.plate, { backgroundColor: t.surface, borderColor: t.border }]}>
+      <View
+        // The full 60-digit number read out digit by digit, so a screen-reader
+        // user compares it the same way two sighted people do — aloud, one digit
+        // at a time — rather than as "twelve thousand…".
+        accessibilityLabel={digits ? digits.replace(/ /g, '').split('').join(' ') : ''}
+        style={[styles.plate, { backgroundColor: t.surface, borderColor: t.border }]}>
         {rows.length > 0 ? (
-          rows.map((row, i) => (
-            <Text
-              key={`${row}-${i}`}
-              selectable
-              // Read out digit by digit rather than as "twelve thousand…",
-              // which is how a screen-reader user has to compare them aloud.
-              accessibilityLabel={row.split('').join(' ')}
-              style={[styles.digits, { color: t.text }]}>
-              {row}
+          rows.map((group, i) => (
+            <Text key={`${group}-${i}`} selectable style={[styles.digits, { color: t.text }]}>
+              {group}
             </Text>
           ))
         ) : (
@@ -104,18 +103,25 @@ export default function VerifyScreen() {
 }
 
 const styles = StyleSheet.create({
+  // The number is 60 digits (12 groups of 5), so the groups wrap into a grid
+  // rather than a 12-row column. Each group is a fixed-width monospace cell so
+  // the columns line up and stay easy to track along while reading aloud.
   plate: {
     borderRadius: Radius.xl,
     borderWidth: StyleSheet.hairlineWidth,
     paddingVertical: Spacing.xl,
     paddingHorizontal: Spacing.lg,
-    gap: Spacing.sm,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    rowGap: Spacing.md,
+    columnGap: Spacing.lg,
   },
   digits: {
     fontFamily: Fonts.mono,
-    fontSize: 40,
-    lineHeight: 48,
-    letterSpacing: 6,
+    fontSize: 28,
+    lineHeight: 34,
+    letterSpacing: 3,
     textAlign: 'center',
     fontVariant: ['tabular-nums'],
   },
