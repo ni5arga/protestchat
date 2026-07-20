@@ -113,6 +113,7 @@ class FakeTransport implements Transport {
 
   /** Every payload this node put on the air, for "did it stop forwarding" assertions. */
   sent: { to: string; payloadBase64: string }[] = [];
+  startError: Error | null = null;
 
   constructor(id: string, world: World) {
     this.id = id;
@@ -130,7 +131,13 @@ class FakeTransport implements Transport {
     for (const h of this.handlers.get(event) ?? []) h(...args);
   }
 
-  async start(): Promise<void> {}
+  async start(): Promise<void> {
+    if (this.startError) {
+      const error = this.startError;
+      this.startError = null;
+      throw error;
+    }
+  }
   async stop(): Promise<void> {}
 
   async send(peerId: string, payloadBase64: string): Promise<void> {
@@ -211,6 +218,26 @@ const stateOf = (n: Node, messageId: string) =>
   n.store.messages.find((m) => m.id === messageId)?.state;
 
 // ---------------------------------------------------------------------------
+
+describe('radio lifecycle', () => {
+  it('can retry after startup fails', async () => {
+    const world = new World();
+    const transport = world.transport('A');
+    const store = createMemoryStore();
+    const engine = new MeshEngine(transport, store);
+    const identity = identityFromSeed(new Uint8Array(32).fill(251));
+
+    transport.startError = new Error('location permission expired');
+    await assert.rejects(engine.start(identity, 'A'), /location permission expired/);
+    assert.equal(engine.status().running, false);
+    assert.equal(engine.status().lastError, 'location permission expired');
+
+    await engine.start(identity, 'A');
+    assert.equal(engine.status().running, true);
+    assert.equal(engine.status().lastError, null);
+    await engine.stop();
+  });
+});
 
 describe('direct delivery', () => {
   it('delivers A -> B when they are connected', () =>

@@ -18,6 +18,7 @@ import {
 } from 'react';
 import { AppState } from 'react-native';
 
+import { RadioAccessGate } from '@/components/radio-access-gate';
 import type { Identity, PublicIdentity } from './crypto';
 import {
   PUBLIC_CHANNEL_KEY,
@@ -135,10 +136,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setName(name);
       await refresh();
       setReady(true);
-
-      // The radio comes up on launch. Someone opening this app in a jammed
-      // square should not have to find a switch first.
-      await mesh.start(id, name).catch(() => {});
     })();
 
     const unsub = mesh.subscribe(setStatus);
@@ -168,7 +165,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startRadio = useCallback(async () => {
-    if (identityRef.current) await mesh.start(identityRef.current, displayName);
+    if (identityRef.current) await mesh.start(identityRef.current, displayName).catch(() => {});
   }, [displayName]);
 
   const stopRadio = useCallback(() => mesh.stop(), []);
@@ -345,7 +342,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      <RadioAccessGate appReady={ready} startRadio={startRadio}>
+        {children}
+      </RadioAccessGate>
+    </AppContext.Provider>
+  );
 }
 
 export function useApp(): AppContextValue {
