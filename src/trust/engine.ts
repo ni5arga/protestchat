@@ -339,11 +339,10 @@ export class TrustEngine {
       if (typeof parsed.delegate !== 'string') throw new Error();
       if (!Array.isArray(parsed.scope)) throw new Error();
       // Validate and deduplicate scopes
-      scopes = [...new Set(
-        parsed.scope.filter((s: string): s is Scope =>
-          ALL_SCOPES.includes(s as Scope)
-        )
-      )];
+      const filtered: Scope[] = parsed.scope.filter((s: string): s is Scope =>
+        (ALL_SCOPES as readonly string[]).includes(s)
+      );
+      scopes = [...new Set(filtered)];
       if (scopes.length === 0) throw new Error();
       delegate = parsed.delegate;
 

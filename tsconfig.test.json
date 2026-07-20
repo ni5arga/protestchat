@@ -7,6 +7,6 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["src/lib/**/*.ts"],
+  "include": ["src/lib/**/*.ts", "src/trust/**/*.ts"],
   "exclude": ["node_modules"]
 }
