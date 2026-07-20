@@ -227,6 +227,7 @@ export function Row({
   leading,
   onPress,
   accessibilityLabel,
+  unread = 0,
 }: {
   title: string;
   subtitle?: string;
@@ -234,12 +235,17 @@ export function Row({
   leading?: ReactNode;
   onPress?: () => void;
   accessibilityLabel?: string;
+  unread?: number;
 }) {
   const t = useTheme();
+  const hasUnread = unread > 0;
   return (
     <Pressable
       accessibilityRole={onPress ? 'button' : undefined}
-      accessibilityLabel={accessibilityLabel}
+      // Fold the count into the label so a screen reader announces it too.
+      accessibilityLabel={
+        hasUnread ? `${accessibilityLabel ?? title}. ${unread} unread.` : accessibilityLabel
+      }
       onPress={onPress}
       style={({ pressed }) => [
         styles.row,
@@ -248,17 +254,31 @@ export function Row({
       {leading}
       <View style={{ flex: 1, gap: 3 }}>
         <View style={styles.rowTitleLine}>
-          <Text style={[Type.bodyStrong, { color: t.text, flexShrink: 1 }]} numberOfLines={1}>
+          <Text
+            style={[
+              Type.bodyStrong,
+              // Unread pulls the title to full strength and bold; a read row sits
+              // one notch quieter, so the list scans as "these need me" first.
+              { color: t.text, flexShrink: 1, fontWeight: hasUnread ? '700' : '600' },
+            ]}
+            numberOfLines={1}>
             {title}
           </Text>
           {tag}
         </View>
         {!!subtitle && (
-          <Text style={[Type.caption, { color: t.textMuted }]} numberOfLines={1}>
+          <Text
+            style={[Type.caption, { color: hasUnread ? t.text : t.textMuted }]}
+            numberOfLines={1}>
             {subtitle}
           </Text>
         )}
       </View>
+      {hasUnread && (
+        <View style={[styles.unread, { backgroundColor: t.accentFill }]}>
+          <Text style={[Type.micro, { color: t.onAccentFill }]}>{unread > 99 ? '99+' : unread}</Text>
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -491,6 +511,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: Spacing.sm,
+  },
+  unread: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   monogram: {
     width: 40,

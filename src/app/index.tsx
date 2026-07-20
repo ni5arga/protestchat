@@ -71,6 +71,7 @@ export default function HomeScreen() {
             <Row
               title="Everyone nearby"
               subtitle={last.get('#public')?.lastText ?? 'Crowd warnings only. Never names or plans.'}
+              unread={last.get('#public')?.unread ?? 0}
               onPress={() => open('#public')}
               accessibilityLabel="Everyone nearby. Not private — anyone in range can read this."
               // The tag repeats what the chat screen's red band will say. Saying
@@ -98,6 +99,7 @@ export default function HomeScreen() {
               key={c.id}
               title={`#${c.name}`}
               subtitle={last.get(`#${c.id}`)?.lastText ?? 'No messages yet'}
+              unread={last.get(`#${c.id}`)?.unread ?? 0}
               onPress={() => open(`#${c.id}`)}
               tag={<Tag tone="caution" label="Shared key" />}
             />
@@ -126,6 +128,7 @@ export default function HomeScreen() {
                 `${g.members.length} ${g.members.length === 1 ? 'person' : 'people'}`
               }
               onPress={() => open(`~${g.id}`)}
+              unread={last.get(`~${g.id}`)?.unread ?? 0}
               tag={<Tag tone="ok" label="Private" />}
             />
           ))}
@@ -149,6 +152,7 @@ export default function HomeScreen() {
               key={c.publicId}
               title={c.name}
               subtitle={last.get(c.publicId)?.lastText ?? 'No messages yet'}
+              unread={last.get(c.publicId)?.unread ?? 0}
               onPress={() => open(c.publicId)}
               leading={<Monogram name={c.name} />}
               accessibilityLabel={`${c.name}. ${c.verified ? 'Verified' : 'Not verified'}.`}

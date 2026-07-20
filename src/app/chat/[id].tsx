@@ -14,13 +14,14 @@
 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Platform, StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { MessageBubble, groupsWithPrevious } from '@/components/message-bubble';
 import { ModeNotice } from '@/components/mode-notice';
 import { Button, Empty, Input } from '@/components/ui';
 import { Spacing, Type } from '@/constants/theme';
+import { useKeyboardHeight } from '@/hooks/use-keyboard-height';
 import { useTheme } from '@/hooks/use-theme';
 import { useApp } from '@/lib/app-state';
 import { describeConversation, type ConversationInfo } from '@/lib/conversation';
@@ -63,7 +64,11 @@ export default function ChatScreen() {
   );
 
   const load = useCallback(async () => {
-    if (conversationId) setMessages(await db.listMessages(conversationId));
+    if (!conversationId) return;
+    setMessages(await db.listMessages(conversationId));
+    // Anything visible on this screen counts as read. Marking on every load
+    // (not just first mount) covers messages that arrive while the chat is open.
+    await db.markConversationRead(conversationId);
   }, [conversationId]);
 
   useEffect(() => {
@@ -94,12 +99,10 @@ export default function ChatScreen() {
   };
 
   const danger = info.mode === 'public';
+  const keyboardHeight = useKeyboardHeight();
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: t.bg }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={insets.top + 44}>
+    <View style={{ flex: 1, backgroundColor: t.bg }}>
       <Stack.Screen options={{ title: info.title }} />
 
       <ModeNotice
@@ -168,7 +171,11 @@ export default function ChatScreen() {
           styles.composer,
           {
             backgroundColor: t.bg,
-            paddingBottom: insets.bottom || Spacing.lg,
+            // When the keyboard is up it covers the home indicator, so the
+            // composer lifts by exactly the keyboard height and drops the
+            // safe-area inset it no longer needs. When it is down, the inset
+            // (or a minimum) keeps the composer off the home indicator.
+            paddingBottom: keyboardHeight > 0 ? keyboardHeight : insets.bottom || Spacing.lg,
             // In public broadcast the rule above the keyboard is red too. By the
             // time the keyboard is up the warning band has scrolled out of the
             // user's attention even though it is still on screen, and this is
@@ -191,7 +198,7 @@ export default function ChatScreen() {
           style={{ paddingHorizontal: Spacing.lg }}
         />
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 

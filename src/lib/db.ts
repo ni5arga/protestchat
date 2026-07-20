@@ -138,6 +138,16 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
       seen_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS seen_by_time ON seen (seen_at);
+
+    -- Unread tracking. Stores, per conversation, how many INCOMING messages
+    -- have been seen. Unread = incoming total minus this. Counting rather than
+    -- timestamping deliberately: sent_at is minute-rounded and comes off the
+    -- sender's clock, so a > comparison would miscount ties and clock skew; a
+    -- count cannot. A missing row means nothing has been read yet.
+    CREATE TABLE IF NOT EXISTS conversation_reads (
+      peer_id    TEXT PRIMARY KEY NOT NULL,
+      read_count INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   return db;
@@ -279,7 +289,10 @@ export type Conversation = { peerId: string; lastText: string; lastAt: number; u
 export async function listConversations(): Promise<Conversation[]> {
   const d = await getDb();
   const rows = await d.getAllAsync<any>(`
-    SELECT m.peer_id, m.text, m.sent_at
+    SELECT m.peer_id, m.text, m.sent_at,
+      (SELECT COUNT(*) FROM messages mi WHERE mi.peer_id = m.peer_id AND mi.outgoing = 0)
+        - COALESCE((SELECT read_count FROM conversation_reads r WHERE r.peer_id = m.peer_id), 0)
+        AS unread
     FROM messages m
     JOIN (SELECT peer_id, MAX(sent_at) AS max_at FROM messages GROUP BY peer_id) latest
       ON m.peer_id = latest.peer_id AND m.sent_at = latest.max_at
@@ -289,8 +302,24 @@ export async function listConversations(): Promise<Conversation[]> {
     peerId: r.peer_id,
     lastText: r.text,
     lastAt: r.sent_at,
-    unread: 0,
+    // Clamp: a read_count ahead of the incoming total (should not happen) must
+    // never surface as a negative badge.
+    unread: Math.max(0, r.unread ?? 0),
   }));
+}
+
+/**
+ * Marks a conversation fully read up to now: records that every incoming
+ * message currently stored has been seen. Called when the chat is on screen.
+ */
+export async function markConversationRead(peerId: string): Promise<void> {
+  const d = await getDb();
+  await d.runAsync(
+    `INSERT INTO conversation_reads (peer_id, read_count)
+     VALUES (?, (SELECT COUNT(*) FROM messages WHERE peer_id = ? AND outgoing = 0))
+     ON CONFLICT(peer_id) DO UPDATE SET read_count = excluded.read_count`,
+    [peerId, peerId],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +544,7 @@ export async function wipeEverything(): Promise<void> {
     DELETE FROM group_members;
     DELETE FROM groups;
     DELETE FROM channels;
+    DELETE FROM conversation_reads;
     VACUUM;
   `);
 }
