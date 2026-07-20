@@ -19,7 +19,7 @@ They are not a security expert. They are probably stressed, possibly moving, and
 | A3 | Passive radio observer in the crowd | Records all BLE traffic | Payloads sealed; no sender, recipient, or content on the wire; sizes padded to buckets |
 | A4 | Malicious participant | Runs the app, is a legitimate mesh peer, relays everything | Cannot decrypt what they relay; cannot attribute it; cannot forge a sender |
 | A5 | Someone who hands you a fake contact code | Attempts MITM at introduction | In-person safety-number comparison; contact shown as **Unverified** until done |
-| A6 | Phone seized after the fact | Reads storage | 6-hour TTL on everything, panic wipe, no cloud backup of the key |
+| A6 | Phone seized after the fact | Reads storage | 6-hour TTL on envelopes AND decrypted messages, panic wipe, no cloud backup of the key |
 
 ## What we explicitly do NOT defend against
 
@@ -100,6 +100,8 @@ Three deliberate choices:
 7. **Channel passphrase strength.** No strength meter, no enforced minimum. At a protest passphrases spread by shouting and will be weak.
 
 ## Fixed
+
+- **Decrypted plaintext was never aged out (found 20 Jul 2026).** The 6-hour TTL was documented as the post-seizure mitigation (A6), but `sweepExpired()` only touched the envelope carry cache and the dedup ledger. The `messages` table — cleartext bodies, sender ids, conversation history — was retained indefinitely on disk until a panic wipe or leaving the channel/group. A seized unlocked phone therefore exposed the entire history the app had ever displayed, defeating the advertised retention window. Fixed: `messages` and their `message_recipients` ledger rows are now swept on the same timer and the same 6-hour clock, measured from `first_seen` (local insert time, not the sender's minute-rounded `sent_at`).
 
 - **Android auto-backup was uploading the message database (found 20 Jul 2026).** `allowBackup` defaulted to true, so Android's automatic backup would copy the SQLite database — every message, contact and channel key — to the user's Google Drive. That silently recreated the exact thing this design exists to avoid: a copy on a third-party server, subject to subpoena, outliving the 6-hour TTL and surviving a panic wipe. Now `allowBackup: false` in `app.json`.
 

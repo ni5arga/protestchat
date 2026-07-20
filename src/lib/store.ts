@@ -48,6 +48,19 @@ export type Message = {
  */
 export const MAX_LOCAL_RETENTION_MS = 6 * 3600 * 1000;
 
+/**
+ * How long decrypted plaintext is allowed to live on this device.
+ *
+ * Same six-hour window as the envelope carry cache: the threat model promises
+ * a seized phone exposes at most ~6h of history, and that promise must hold for
+ * the SQLite rows the user actually reads, not just the envelopes we relay for
+ * others. Aged from FIRST SIGHT locally — `sent_at` is the sender's minute-
+ * rounded clock and arrives with arbitrary store-and-forward delay, so a
+ * message that took hours to reach us would be deleted on arrival if we used
+ * it.
+ */
+export const MESSAGE_RETENTION_MS = MAX_LOCAL_RETENTION_MS;
+
 /** Dedup entries outlive the envelope itself, so nothing loops back to us. */
 export const SEEN_RETENTION_MS = 7 * 24 * 3600 * 1000;
 
@@ -122,6 +135,13 @@ export interface MemoryStore extends MeshStore {
 export function createMemoryStore(now: () => number = Date.now): MemoryStore {
   const envelopes = new Map<string, StoredEnvelope>();
   const messages = new Map<string, Message>();
+  /**
+   * Local clock time the message first appeared on this device. Held sideband
+   * instead of on Message because sent_at is the sender's clock and must not be
+   * trusted for retention. Mirrors the `first_seen` column in db.ts; if the two
+   * drift, the tests are testing a fiction.
+   */
+  const messageFirstSeen = new Map<string, number>();
   const contacts = new Map<string, { publicId: string; name: string }>();
   const seen = new Map<string, number>();
   /**
@@ -137,6 +157,18 @@ export function createMemoryStore(now: () => number = Date.now): MemoryStore {
       const t = now();
       for (const [id, e] of envelopes) if (e.expiresAt <= t) envelopes.delete(id);
       for (const [id, at] of seen) if (at <= t - SEEN_RETENTION_MS) seen.delete(id);
+      // Plaintext is a security control here too, not housekeeping: a row past
+      // retention is evidence sitting on a phone that might get taken. Sweeps
+      // the expected-recipient ledger implicitly — a Map keyed on messageId —
+      // because the SQL layer deletes message_recipients alongside the message.
+      const cutoff = t - MESSAGE_RETENTION_MS;
+      for (const [id, seenAt] of messageFirstSeen) {
+        if (seenAt <= cutoff) {
+          messages.delete(id);
+          messageFirstSeen.delete(id);
+          expected.delete(id);
+        }
+      }
     },
 
     async envelopeIds() {
@@ -184,8 +216,13 @@ export function createMemoryStore(now: () => number = Date.now): MemoryStore {
 
     async insertMessage(m) {
       // INSERT OR IGNORE: re-delivery of the same message id must not clobber
-      // the state the UI already settled on.
-      if (!messages.has(m.id)) messages.set(m.id, { ...m });
+      // the state the UI already settled on. First-seen is recorded only on the
+      // first write, matching the column's behaviour in db.ts — a re-delivery
+      // must not reset the retention clock.
+      if (!messages.has(m.id)) {
+        messages.set(m.id, { ...m });
+        messageFirstSeen.set(m.id, now());
+      }
     },
 
     async setMessageState(id, state) {

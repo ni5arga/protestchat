@@ -158,7 +158,7 @@ The banner at the top of the home screen should read **Connected to 1 phone**. S
 | One phone joins `gate4` with the *wrong* passphrase | Sees nothing. It relays the traffic but cannot read it |
 | Send in "Everyone nearby" | Every phone with the app sees it, contact or not |
 | Make a group of 3, send once | All members receive it; non-members see nothing |
-| Leave a phone idle 6 hours | Envelopes expire and disappear |
+| Leave a phone idle 6 hours | Envelopes AND decrypted messages expire and disappear |
 | Settings → panic wipe | Everything gone, new identity, radio back up |
 
 Row 4 is the real proof — it is the difference between a mesh and a Bluetooth demo. Rows 5–8 cover the modes added after the first build.

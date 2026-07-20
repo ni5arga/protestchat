@@ -12,7 +12,7 @@ import { fromBase64, toBase64 } from './bytes';
 import type { Envelope } from './protocol';
 import { decodeEnvelope, encodeEnvelope } from './protocol';
 import type { MeshStore, Message, MessageState } from './store';
-import { MAX_LOCAL_RETENTION_MS, SEEN_RETENTION_MS } from './store';
+import { MAX_LOCAL_RETENTION_MS, MESSAGE_RETENTION_MS, SEEN_RETENTION_MS } from './store';
 
 export type Contact = {
   publicId: string;
@@ -27,7 +27,7 @@ export type Contact = {
 // engine must be able to reach them without dragging expo-sqlite in with them.
 // Re-exported here so every existing `db.Message` call site keeps working.
 export type { Message, MessageState };
-export { MAX_LOCAL_RETENTION_MS };
+export { MAX_LOCAL_RETENTION_MS, MESSAGE_RETENTION_MS };
 
 /**
  * Memoises the PROMISE, not the handle.
@@ -73,15 +73,20 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
     -- sender_id is who actually wrote it, which only differs from peer_id in
     -- channels and groups where many people speak into one conversation.
     CREATE TABLE IF NOT EXISTS messages (
-      id        TEXT PRIMARY KEY NOT NULL,
-      peer_id   TEXT NOT NULL,
-      sender_id TEXT,
-      outgoing  INTEGER NOT NULL,
-      text      TEXT NOT NULL,
-      sent_at   INTEGER NOT NULL,
-      state     TEXT NOT NULL
+      id         TEXT PRIMARY KEY NOT NULL,
+      peer_id    TEXT NOT NULL,
+      sender_id  TEXT,
+      outgoing   INTEGER NOT NULL,
+      text       TEXT NOT NULL,
+      sent_at    INTEGER NOT NULL,
+      -- Local clock time the row first appeared on this device. sent_at is the
+      -- sender's minute-rounded clock and arrives with arbitrary store-and-
+      -- forward delay, so retention is measured from first_sight, never sent_at.
+      first_seen INTEGER NOT NULL DEFAULT 0,
+      state      TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS messages_by_peer ON messages (peer_id, sent_at);
+    CREATE INDEX IF NOT EXISTS messages_by_first_seen ON messages (first_seen);
 
     -- Who each outgoing message is still waiting on a delivery receipt from.
     -- One row per (message, recipient): one for a direct message, N for a group
@@ -150,7 +155,25 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
     );
   `);
 
+  await migrateMessagesFirstSeen(db);
+
   return db;
+}
+
+/**
+ * Adds the `first_seen` column to `messages` on installs that pre-date it.
+ *
+ * SQLite has no `ADD COLUMN IF NOT EXISTS`, so we read the schema first. The
+ * default 0 backdates pre-existing rows to "the epoch", which means a single
+ * sweep on the next foreground deletes them — the alternative (stamp them now)
+ * would silently grant a fresh six-hour lease to plaintext the user may have
+ * been carrying for days, which is exactly the bug this column exists to fix.
+ */
+async function migrateMessagesFirstSeen(db: SQLite.SQLiteDatabase): Promise<void> {
+  const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(messages)`);
+  if (cols.some((c) => c.name === 'first_seen')) return;
+  await db.execAsync(`ALTER TABLE messages ADD COLUMN first_seen INTEGER NOT NULL DEFAULT 0`);
+  await db.execAsync(`CREATE INDEX IF NOT EXISTS messages_by_first_seen ON messages (first_seen)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -218,9 +241,9 @@ export async function getContact(publicId: string): Promise<Contact | null> {
 export async function insertMessage(m: Message): Promise<void> {
   const d = await getDb();
   await d.runAsync(
-    `INSERT OR IGNORE INTO messages (id, peer_id, sender_id, outgoing, text, sent_at, state)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [m.id, m.peerId, m.senderId, m.outgoing ? 1 : 0, m.text, m.sentAt, m.state],
+    `INSERT OR IGNORE INTO messages (id, peer_id, sender_id, outgoing, text, sent_at, first_seen, state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [m.id, m.peerId, m.senderId, m.outgoing ? 1 : 0, m.text, m.sentAt, Date.now(), m.state],
   );
 }
 
@@ -505,6 +528,18 @@ export async function sweepExpired(): Promise<void> {
   await d.runAsync(`DELETE FROM envelopes WHERE expires_at <= ?`, [now]);
   // Keep dedup entries a day past the longest TTL so nothing loops back.
   await d.runAsync(`DELETE FROM seen WHERE seen_at <= ?`, [now - SEEN_RETENTION_MS]);
+
+  // Age out decrypted plaintext. The same six-hour window as the envelope
+  // cache, measured from first sight on THIS device (see first_seen in the
+  // schema). The recipient ledger is swept with the messages it belongs to —
+  // same pattern as deleteGroup — so an orphan row can never outlive its
+  // message and a future insert under a recycled id cannot inherit an ack.
+  await d.runAsync(
+    `DELETE FROM message_recipients
+     WHERE message_id IN (SELECT id FROM messages WHERE first_seen <= ?)`,
+    [now - MESSAGE_RETENTION_MS],
+  );
+  await d.runAsync(`DELETE FROM messages WHERE first_seen <= ?`, [now - MESSAGE_RETENTION_MS]);
 }
 
 /**
