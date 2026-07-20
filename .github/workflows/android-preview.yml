@@ -1,0 +1,125 @@
+name: Android preview
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  CI: true
+  EXPO_NO_TELEMETRY: 1
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check Expo dependencies
+        run: npx expo install --check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  build-android:
+    name: Build Android preview
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v5.6.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6.2.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android project
+        env:
+          EXPO_NO_GIT_STATUS: 1
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          apk_name="protestchat-${GITHUB_SHA::12}-android-preview.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "artifacts/${apk_name}"
+          (cd artifacts && sha256sum "${apk_name}" > SHA256SUMS)
+          printf 'APK_NAME=%s\n' "${apk_name}" >> "${GITHUB_ENV}"
+
+      - name: Attest APK provenance
+        uses: actions/attest@v4.2.0
+        with:
+          subject-path: artifacts/${{ env.APK_NAME }}
+
+      - name: Upload Android preview
+        id: upload
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: protestchat-android-preview-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Write build summary
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        shell: bash
+        run: |
+          {
+            printf '### Android preview\n\n'
+            printf -- '- APK: `%s`\n' "${APK_NAME}"
+            printf -- '- Artifact: %s\n' "${ARTIFACT_URL}"
+            printf -- '- Commit: `%s`\n' "${GITHUB_SHA}"
+            printf -- '- Signing: Expo template debug key (non-production)\n'
+          } >> "${GITHUB_STEP_SUMMARY}"

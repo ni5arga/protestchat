@@ -72,6 +72,8 @@ export default function ChatScreen() {
   }, [conversationId]);
 
   useEffect(() => {
+    // State is updated only after the asynchronous SQLite read completes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load, conversations]);
 
