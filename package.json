@@ -45,6 +45,7 @@
     "@types/react": "~19.2.2",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~57.0.0",
+    "patch-package": "^8.0.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -56,7 +57,8 @@
     "lint": "expo lint",
     "test": "node --experimental-strip-types --import ./scripts/ts-resolver.mjs --test 'src/lib/__tests__/*.test.ts'",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
-    "doctor": "bash scripts/doctor.sh"
+    "doctor": "bash scripts/doctor.sh",
+    "postinstall": "patch-package"
   },
   "private": true,
   "license": "MIT",

@@ -233,6 +233,10 @@ public final class BleMeshModule: Module {
   private var central: CBCentralManager?
   private var peripheralManager: CBPeripheralManager?
 
+  /// CoreBluetooth delegates must be NSObject subclasses; Expo's `Module` is not
+  /// one, so an NSObject shim receives the callbacks and forwards them here.
+  private lazy var proxy = CBProxy(owner: self)
+
   private var inboundCharacteristic: CBMutableCharacteristic?
   private var outboundCharacteristic: CBMutableCharacteristic?
   private var serviceAdded = false
@@ -329,7 +333,7 @@ public final class BleMeshModule: Module {
           )
           return
         }
-        entry.peripheral.delegate = self
+        entry.peripheral.delegate = self.proxy
         central.connect(entry.peripheral, options: nil)
         promise.resolve(nil)
       }
@@ -408,14 +412,14 @@ public final class BleMeshModule: Module {
     // radio should not be prompting.
     if central == nil {
       central = CBCentralManager(
-        delegate: self,
+        delegate: proxy,
         queue: queue,
         options: [CBCentralManagerOptionShowPowerAlertKey: false]
       )
     }
     if peripheralManager == nil {
       peripheralManager = CBPeripheralManager(
-        delegate: self,
+        delegate: proxy,
         queue: queue,
         options: [CBPeripheralManagerOptionShowPowerAlertKey: false]
       )
@@ -898,7 +902,7 @@ public final class BleMeshModule: Module {
 
 // MARK: - CBCentralManagerDelegate (scanning + outbound links)
 
-extension BleMeshModule: CBCentralManagerDelegate {
+extension BleMeshModule {
   public func centralManagerDidUpdateState(_ manager: CBCentralManager) {
     publishStateIfChanged()
     applyCentralState()
@@ -941,7 +945,7 @@ extension BleMeshModule: CBCentralManagerDelegate {
     if links[id] == nil {
       links[id] = Link(peerId: id, isIncoming: false)
     }
-    peripheral.delegate = self
+    peripheral.delegate = proxy
     peripheral.discoverServices([Wire.serviceUUID])
   }
 
@@ -970,7 +974,7 @@ extension BleMeshModule: CBCentralManagerDelegate {
 
 // MARK: - CBPeripheralDelegate (central role: talking to a peer's server)
 
-extension BleMeshModule: CBPeripheralDelegate {
+extension BleMeshModule {
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
     guard error == nil, let service = peripheral.services?.first(where: { $0.uuid == Wire.serviceUUID })
     else {
@@ -1052,7 +1056,7 @@ extension BleMeshModule: CBPeripheralDelegate {
 
 // MARK: - CBPeripheralManagerDelegate (peripheral role: serving inbound centrals)
 
-extension BleMeshModule: CBPeripheralManagerDelegate {
+extension BleMeshModule {
   public func peripheralManagerDidUpdateState(_ manager: CBPeripheralManager) {
     publishStateIfChanged()
     applyPeripheralState()
@@ -1124,5 +1128,109 @@ extension BleMeshModule: CBPeripheralManagerDelegate {
 
   public func peripheralManagerIsReady(toUpdateSubscribers manager: CBPeripheralManager) {
     pumpAll()
+  }
+}
+
+// MARK: - CoreBluetooth delegate proxy
+//
+// A CoreBluetooth delegate must be an NSObject; Expo's `Module` is not one, so
+// the module cannot be the delegate directly. This thin NSObject receives every
+// central/peripheral/peripheral-manager callback and forwards it to the module,
+// which owns all of the logic above. It carries a weak reference so it never
+// keeps the module alive. Callbacks arrive on the module's serial queue (both
+// managers are constructed with it), so forwarding is synchronous and safe.
+
+private final class CBProxy: NSObject {
+  weak var owner: BleMeshModule?
+  init(owner: BleMeshModule) { self.owner = owner }
+}
+
+extension CBProxy: CBCentralManagerDelegate {
+  func centralManagerDidUpdateState(_ manager: CBCentralManager) {
+    owner?.centralManagerDidUpdateState(manager)
+  }
+
+  func centralManager(
+    _ manager: CBCentralManager,
+    didDiscover peripheral: CBPeripheral,
+    advertisementData: [String: Any],
+    rssi RSSI: NSNumber
+  ) {
+    owner?.centralManager(manager, didDiscover: peripheral,
+                          advertisementData: advertisementData, rssi: RSSI)
+  }
+
+  func centralManager(_ manager: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    owner?.centralManager(manager, didConnect: peripheral)
+  }
+
+  func centralManager(
+    _ manager: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?
+  ) {
+    owner?.centralManager(manager, didFailToConnect: peripheral, error: error)
+  }
+
+  func centralManager(
+    _ manager: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?
+  ) {
+    owner?.centralManager(manager, didDisconnectPeripheral: peripheral, error: error)
+  }
+}
+
+extension CBProxy: CBPeripheralDelegate {
+  func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    owner?.peripheral(peripheral, didDiscoverServices: error)
+  }
+
+  func peripheral(
+    _ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?
+  ) {
+    owner?.peripheral(peripheral, didDiscoverCharacteristicsFor: service, error: error)
+  }
+
+  func peripheral(
+    _ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?
+  ) {
+    owner?.peripheral(peripheral, didUpdateValueFor: characteristic, error: error)
+  }
+
+  func peripheral(
+    _ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?
+  ) {
+    owner?.peripheral(peripheral, didWriteValueFor: characteristic, error: error)
+  }
+
+  func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+    owner?.peripheralIsReady(toSendWriteWithoutResponse: peripheral)
+  }
+}
+
+extension CBProxy: CBPeripheralManagerDelegate {
+  func peripheralManagerDidUpdateState(_ manager: CBPeripheralManager) {
+    owner?.peripheralManagerDidUpdateState(manager)
+  }
+
+  func peripheralManagerDidStartAdvertising(_ manager: CBPeripheralManager, error: Error?) {
+    owner?.peripheralManagerDidStartAdvertising(manager, error: error)
+  }
+
+  func peripheralManager(
+    _ manager: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic
+  ) {
+    owner?.peripheralManager(manager, central: central, didSubscribeTo: characteristic)
+  }
+
+  func peripheralManager(
+    _ manager: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic
+  ) {
+    owner?.peripheralManager(manager, central: central, didUnsubscribeFrom: characteristic)
+  }
+
+  func peripheralManager(_ manager: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
+    owner?.peripheralManager(manager, didReceiveWrite: requests)
+  }
+
+  func peripheralManagerIsReady(toUpdateSubscribers manager: CBPeripheralManager) {
+    owner?.peripheralManagerIsReady(toUpdateSubscribers: manager)
   }
 }
