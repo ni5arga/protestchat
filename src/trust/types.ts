@@ -8,6 +8,7 @@
  * rest of the app will conform to during integration.
  */
 
+import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 
 // ---------------------------------------------------------------------------
@@ -314,8 +315,6 @@ const STATEMENT_TYPE_INDEX: Readonly<Record<StatementType, number>> = Object.fre
 // ---------------------------------------------------------------------------
 // Hashing
 // ---------------------------------------------------------------------------
-
-import { sha256 } from '@noble/hashes/sha2.js';
 
 /**
  * Compute the statement ID (SHA-256 of the canonical serialization).

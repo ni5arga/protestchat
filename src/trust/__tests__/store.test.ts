@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { createMemoryTrustStore } from '../store';
-import type { Entity, Delegation, Revocation, Validation, SignedStatement } from '../types';
+import type { Entity, Delegation, SignedStatement } from '../types';
 import { createKeys } from './fixtures';
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ import {
   serializeStatement,
   hashStatement,
 } from '../types';
-import type { Statement, StatementType, SignedStatement, KeyId, Scope } from '../types';
+import type { Statement, StatementType, SignedStatement, Scope } from '../types';
 import { createKeys, type TestKeyPair } from './fixtures';
 
 // ---------------------------------------------------------------------------
