@@ -15,7 +15,9 @@
  * talking to whom.
  */
 
-import { fromBase64, fromUtf8, toBase64, toUtf8 } from './bytes';
+import { sha256 } from '@noble/hashes/sha2.js';
+
+import { concat, fromBase64, fromUtf8, toBase64, toUtf8 } from './bytes';
 // crypto-core rather than crypto: crypto.ts is only the keystore, and it pulls
 // in expo-secure-store. Nothing here needs the keystore — the identity arrives
 // through start() — and importing the core directly is what lets this file be
@@ -180,6 +182,13 @@ export class MeshEngine {
     this.unsubscribes = [];
     this.peers.clear();
     this.connected.clear();
+    // Drop the in-memory secrets. panic wipe calls stop() before erasing disk;
+    // clearing these here means a wiped app is not still holding the identity
+    // and channel keys in a live field. JS cannot zero the backing memory, so
+    // this drops the references for GC rather than promising secure erasure —
+    // the seized-unlocked-phone case remains out of scope (see threat model).
+    this.identity = null;
+    this.channelKeys = [];
     await this.transport.stop();
     this.emit();
   }
@@ -458,28 +467,42 @@ export class MeshEngine {
       if (parsed?.kind === 'text') {
         const sender = hit.opened.sender.publicId;
 
-        // Never overwrite a name the user set; only ensure the sender exists so
-        // channel messages from strangers are attributable to something stable.
-        await this.store.upsertContact(sender, shortName(sender));
-        await this.store.insertMessage({
-          id: randomId(),
-          peerId: hit.conversationId ?? sender,
-          senderId: sender,
-          outgoing: false,
-          text: parsed.text,
-          sentAt: parsed.sentAt,
-          state: 'delivered',
-        });
-        this.onMessage?.(hit.conversationId ?? sender, sender, parsed.text, parsed.sentAt);
+        // Content-level dedup. The envelope-id dedup above is defeated by a
+        // replay attacker who re-wraps a captured ciphertext in a fresh envelope
+        // id; hashing the DECRYPTED body catches that. A genuine resend carries
+        // a fresh random `id` (and a distinct sentAt), so only an exact replay
+        // collides. If we have already delivered this message, we still relay
+        // the envelope below (others may not have it) but do not file a
+        // duplicate or re-ack — a stale directive resurfacing hours later is
+        // exactly the confusion this prevents.
+        const contentHash = toBase64(
+          sha256(concat(toUtf8(`${sender}|${hit.conversationId ?? ''}|`), hit.opened.body)),
+        );
 
-        // Ack only what asked to be acked, and only in the one-to-one mode.
-        // `conversationId === null` means this opened under our own identity —
-        // a direct message, or one copy of a group fan-out, which is the same
-        // thing on the wire. A channel hit is never acked even if the sender
-        // put an id in the body, so a hostile or buggy peer cannot talk us into
-        // announcing our presence in a channel.
-        if (hit.conversationId === null && parsed.id) {
-          await this.sendReceipt(hit.opened.sender, parsed.id);
+        if (await this.store.markMessageSeen(contentHash)) {
+          // Never overwrite a name the user set; only ensure the sender exists so
+          // channel messages from strangers are attributable to something stable.
+          await this.store.upsertContact(sender, shortName(sender));
+          await this.store.insertMessage({
+            id: randomId(),
+            peerId: hit.conversationId ?? sender,
+            senderId: sender,
+            outgoing: false,
+            text: parsed.text,
+            sentAt: parsed.sentAt,
+            state: 'delivered',
+          });
+          this.onMessage?.(hit.conversationId ?? sender, sender, parsed.text, parsed.sentAt);
+
+          // Ack only what asked to be acked, and only in the one-to-one mode.
+          // `conversationId === null` means this opened under our own identity —
+          // a direct message, or one copy of a group fan-out, which is the same
+          // thing on the wire. A channel hit is never acked even if the sender
+          // put an id in the body, so a hostile or buggy peer cannot talk us
+          // into announcing our presence in a channel.
+          if (hit.conversationId === null && parsed.id) {
+            await this.sendReceipt(hit.opened.sender, parsed.id);
+          }
         }
       } else if (parsed?.kind === 'receipt' && hit.conversationId === null) {
         // A receipt is not itself acked. `packBody` is the only thing that ever

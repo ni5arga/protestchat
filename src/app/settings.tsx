@@ -51,8 +51,8 @@ export default function SettingsScreen() {
 
       <Card style={{ gap: Spacing.lg }}>
         <Field
-          label="Name others see nearby"
-          hint="This is broadcast in the clear to every phone in range, contact or not. Do not use your real name.">
+          label="Your name"
+          hint="Stays on this phone. It is never broadcast — nearby devices see only a rotating random code, never this name — and it is shown to you, not to them.">
           <Input value={name} onChangeText={setName} placeholder="anon" maxLength={32} />
         </Field>
         <Button

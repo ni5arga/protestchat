@@ -18,7 +18,7 @@ import { describe, it } from 'node:test';
 
 import { fromBase64, toBase64, toUtf8 } from '../bytes';
 import type { Identity, PublicIdentity } from '../crypto-core';
-import { PUBLIC_CHANNEL_KEY, identityFromSeed, seal } from '../crypto-core';
+import { PUBLIC_CHANNEL_KEY, identityFromSeed, randomId, seal } from '../crypto-core';
 import { MeshEngine } from '../mesh';
 import type { Envelope } from '../protocol';
 import {
@@ -329,6 +329,32 @@ describe('dedup', () => {
       // the three nodes forwards each at most to its two neighbours. Anything
       // beyond that means the dedup ledger is not holding.
       assert.ok(world.delivered - before <= 12, `too much traffic: ${world.delivered - before}`);
+    }));
+
+  it('does not deliver a replayed message twice', () =>
+    scenario(['A', 'C'], async ({ A, C }, world) => {
+      world.connect('A', 'C');
+      await world.settle();
+
+      await A.engine.sendText(C.pub, 'we move at nine');
+      await world.settle();
+      assert.equal(inbox(C).length, 1);
+
+      // The replay: take the exact sealed envelope A put on the air and re-wrap
+      // the identical ciphertext in a FRESH envelope id, so the envelope-id
+      // dedup misses it — then hand it to C as if a peer re-broadcast it.
+      const original = A.transport.sent
+        .map((s) => decodeEnvelope(fromBase64(s.payloadBase64)))
+        .find((e): e is Envelope => !!e && e.type === EnvelopeType.Sealed && e.payload.length > 200);
+      assert.ok(original, 'no sealed message captured');
+
+      const replay = encodeEnvelope({ ...original, id: fromBase64(randomId()) });
+      world.transport('C').fire('payload', 'A', toBase64(replay));
+      await world.settle();
+
+      // Content-level dedup must keep this from becoming a second copy — a stale
+      // "we move at nine" resurfacing later is exactly the danger.
+      assert.equal(inbox(C).length, 1, 'replay was delivered as a duplicate');
     }));
 });
 

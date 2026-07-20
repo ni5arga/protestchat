@@ -144,6 +144,16 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
     );
     CREATE INDEX IF NOT EXISTS seen_by_time ON seen (seen_at);
 
+    -- Content-level dedup, keyed on a hash of the DECRYPTED message. The seen
+    -- table above dedups on the outer envelope id, which a replay attacker
+    -- simply regenerates; this one catches the same plaintext arriving under a
+    -- fresh envelope id. Swept on the same schedule as seen.
+    CREATE TABLE IF NOT EXISTS seen_messages (
+      hash    TEXT PRIMARY KEY NOT NULL,
+      seen_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS seen_messages_by_time ON seen_messages (seen_at);
+
     -- Unread tracking. Stores, per conversation, how many INCOMING messages
     -- have been seen. Unread = incoming total minus this. Counting rather than
     -- timestamping deliberately: sent_at is minute-rounded and comes off the
@@ -517,6 +527,16 @@ export async function hasSeen(idB64: string): Promise<boolean> {
   return !!r;
 }
 
+/** Returns true the first time this decrypted-message hash is presented. */
+export async function markMessageSeen(hashB64: string): Promise<boolean> {
+  const d = await getDb();
+  const result = await d.runAsync(
+    `INSERT OR IGNORE INTO seen_messages (hash, seen_at) VALUES (?, ?)`,
+    [hashB64, Date.now()],
+  );
+  return result.changes > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Expiry and wipe
 // ---------------------------------------------------------------------------
@@ -528,6 +548,7 @@ export async function sweepExpired(): Promise<void> {
   await d.runAsync(`DELETE FROM envelopes WHERE expires_at <= ?`, [now]);
   // Keep dedup entries a day past the longest TTL so nothing loops back.
   await d.runAsync(`DELETE FROM seen WHERE seen_at <= ?`, [now - SEEN_RETENTION_MS]);
+  await d.runAsync(`DELETE FROM seen_messages WHERE seen_at <= ?`, [now - SEEN_RETENTION_MS]);
 
   // Age out decrypted plaintext. The same six-hour window as the envelope
   // cache, measured from first sight on THIS device (see first_seen in the
@@ -556,6 +577,7 @@ export const meshStore: MeshStore = {
   getEnvelopesByIds,
   markSeen,
   hasSeen,
+  markMessageSeen,
   insertMessage,
   setMessageState,
   upsertContact,
@@ -575,6 +597,7 @@ export async function wipeEverything(): Promise<void> {
     DELETE FROM message_recipients;
     DELETE FROM envelopes;
     DELETE FROM seen;
+    DELETE FROM seen_messages;
     DELETE FROM contacts;
     DELETE FROM group_members;
     DELETE FROM groups;
