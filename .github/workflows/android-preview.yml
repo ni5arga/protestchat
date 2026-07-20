@@ -1,7 +1,9 @@
 name: Android preview
 
 on:
+  pull_request:
   push:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -46,6 +48,7 @@ jobs:
 
   build-android:
     name: Build Android preview
+    if: github.event_name != 'pull_request'
     needs: quality
     runs-on: ubuntu-24.04
     timeout-minutes: 45
