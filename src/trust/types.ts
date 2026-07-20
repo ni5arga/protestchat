@@ -41,14 +41,20 @@ export function equalKeyId(a: KeyId, b: KeyId): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * How we trust an entity.
+ * How the trust engine classifies an entity internally.
  *
- *   root      — pre-loaded or manually subscribed. Ultimate trust anchor.
- *               Has all scopes implicitly. Can certify other keys.
- *   delegated — trusted because a root entity vouched for them via
- *               a signed delegation with the required scope.
- *   direct    — trusted because we met in person and exchanged keys.
- *               Not an authority, but messages from them are "known".
+ * These are ENGINE-INTERNAL labels used to resolve delegation chains.
+ * They are NOT intended for display to users — the app's contact trust
+ * model (safety number verification, in-person key exchange) is separate
+ * and orthogonal. The engine reports VerificationResult; the app decides
+ * what to show.
+ *
+ *   root      — subscribed as a trust anchor. Can certify other keys.
+ *   delegated — trusted because a root-certified entity vouched for
+ *               them via a signed delegation.
+ *   direct    — known via in-person key exchange (QR scan + safety
+ *               number compare). Not an authority in the delegation
+ *               graph, but the engine knows who they are.
  *   none      — known but not trusted. Default for unsolicited messages.
  */
 export type TrustKind = 'root' | 'delegated' | 'direct' | 'none';
@@ -205,6 +211,24 @@ export interface Validation {
 // Verification
 // ---------------------------------------------------------------------------
 
+/**
+ * The engine's assessment of a signed statement.
+ *
+ * These statuses describe the engine's internal trust determination.
+ * The app decides whether and how to surface them. For example,
+ * 'trusted' might render as a verified badge for an emergency alert,
+ * while 'untrusted' is the normal state for messages from strangers
+ * (the app's default; no special treatment needed).
+ *
+ *   trusted            — verified by the engine's trust graph.
+ *   known              — signed by a known entity but not a trusted authority.
+ *   untrusted          — signature is valid but issuer is unknown/untrusted.
+ *   revoked            — the issuer's key or delegation has been revoked.
+ *   expired            — the statement is past its expiry time.
+ *   unknown-issuer     — the issuer's key is not in the engine's store.
+ *   verified-emergency — emergency that met the validation threshold.
+ *   pending-emergency  — emergency awaiting more validations.
+ */
 export type VerificationStatus =
   | 'trusted'
   | 'known'

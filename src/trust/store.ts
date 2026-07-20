@@ -71,6 +71,11 @@ export interface TrustStore {
   listEntitiesByKind(kind: Entity['trustKind']): Promise<Entity[]>;
 
   // ---- Delegations ----
+  // WARNING: Delegations encode the organizational hierarchy (who authorized
+  // whom). In production they MUST NOT be persisted to disk — that would turn
+  // a seized unlocked phone into a complete map of the trust graph.
+  // MemoryTrustStore correctly keeps them in memory only (isPersistent=false).
+  // A SQLite adapter MUST keep this table in memory or skip persistence.
   addDelegation(d: Delegation): Promise<void>;
   removeDelegation(id: string): Promise<void>;
   getDelegation(id: string): Promise<Delegation | null>;

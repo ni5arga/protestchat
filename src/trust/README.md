@@ -1,10 +1,32 @@
 # Trust module
 
-Standalone identity, authorization, and trust management for protestchat.
+Emergency-broadcast authentication and trust management for protestchat.
 
 This module is **completely independent** of the mesh protocol — it doesn't import anything from `src/lib/`, doesn't know about envelopes, BLE, or the mesh. It depends only on `@noble/curves` (Ed25519) and `@noble/hashes` (SHA-256).
 
-During integration, every incoming message passes through `TrustEngine.verify()` which determines how it should be displayed — trusted, known, untrusted, revoked, or emergency.
+## Subscription model, not global authority
+
+- **No pre-loaded root keys.** `PRELOADED_ROOTS` is deliberately empty — a shipped root key is a single compromise target.
+- **Every user curates their own trust graph** via `subscribe()`. Trust anchors arrive the same way any contact does: QR code, paste, or signed delegation from someone you already trust.
+- **Delegations are memory only.** Never persisted to disk. On restart the graph is rebuilt from signed statements received over the mesh. A seized phone reveals no organizational hierarchy.
+- **Trust kinds are engine internals.** The app's contact trust model (in-person key exchange + safety numbers) is separate and orthogonal. The engine reports `VerificationResult`; the app decides what to display.
+
+See [`DESIGN.md`](DESIGN.md) for the full rationale.
+
+## Important: trust kinds are engine internals
+
+The trust kinds (`root`, `delegated`, `direct`, `none`) describe where an
+entity sits in the delegation graph — what it can DO (certify, announce,
+validate). They are NOT user-facing identity labels and the app should not
+display them as such.
+
+The app's contact trust model is separate and orthogonal:
+1. Scan a QR code → you have their public key
+2. Compare safety numbers in person → you know the key is theirs
+3. Messages from verified contacts are displayed normally
+
+The engine's `VerificationResult` is what the app should use for rendering
+decisions. `TrustKind` is for engine-internal chain resolution.
 
 ## Model
 
@@ -26,13 +48,13 @@ During integration, every incoming message passes through `TrustEngine.verify()`
 └──────────────────────────────────────────┘
 ```
 
-### Entity trust kinds
+### Entity trust kinds (engine-internal)
 
 | Kind | Meaning |
 |---|---|
-| `root` | Pre-loaded or manually subscribed. Ultimate trust anchor. All scopes implicitly. |
-| `delegated` | Trusted because a root entity vouched for them via a signed delegation. |
-| `direct` | Trusted because we met in person and exchanged keys. Not an authority. |
+| `root` | Manually subscribed trust anchor. Can certify other keys. |
+| `delegated` | Trusted because a root-certified entity vouched for them. |
+| `direct` | Known via in-person key exchange. Not an authority in the graph. |
 | `none` | Known but not trusted. Default for unsolicited messages. |
 
 ### Scopes (what an entity can do)
@@ -77,24 +99,41 @@ src/trust/
 
 ## TrustEngine API
 
-### Entity management
+### Subscription (primary API)
+
+Users control their own trust graph. There is no global authority.
 
 ```typescript
 const engine = new TrustEngine();
 
-// Subscribe to a root entity (pre-loaded or scanned QR)
-const entity = await engine.subscribe(publicKey, 'Coordinating Committee', 'root');
+// Subscribe to an entity you trust. This is how trust anchors are added —
+// there are NO pre-loaded keys in the binary.
+const committee = await engine.subscribe(
+  committeePublicKey,
+  'Coordinating Committee',
+  'root',
+);
 
-// Ensure an entity exists (auto-register with 'none' trust)
-await engine.ensureEntity(unknownPublicKey);
+// Add a contact you met in person (QR scan + safety numbers)
+const contact = await engine.subscribe(
+  contactPublicKey,
+  'Alice',
+  'direct',
+);
 
-// Look up and list
+// List entities you've explicitly subscribed to
+const subscribed = await engine.listSubscribed();
+
+// Unsubscribe — your choice, no one can override it
+await engine.unsubscribe(committee.id);
+
+// Look up and list all entities (including auto-registered)
 const e = await engine.getEntity(keyId);
 const all = await engine.listEntities();
 const roots = await engine.listEntities('root');
 
-// Unsubscribe
-await engine.unsubscribe(keyId);
+// Auto-register a key we received a message from (no trust assigned)
+await engine.ensureEntity(unknownPublicKey);
 ```
 
 ### Statement verification (core method)

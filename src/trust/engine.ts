@@ -66,10 +66,21 @@ export class TrustEngine {
   // -----------------------------------------------------------------------
 
   /**
-   * Subscribe to an entity. Adds them to the trust graph with the given
-   * trust kind.
+   * Subscribe to an entity. This is the primary way the user adds a trust
+   * anchor — the entity becomes part of the local trust graph and can
+   * issue delegations, sign announcements, and validate emergencies.
+   *
+   * The `trustKind` determines what the entity is allowed to do:
+   *   root      — full authority: can certify other keys, announce, validate
+   *   delegated — trusted via a signed delegation from a root entity
+   *   direct    — known via in-person key exchange (QR + safety numbers)
+   *   none      — lowest level; entity is known but not trusted
    *
    * `publicKey` is the raw 32-byte Ed25519 public key.
+   *
+   * Subscribing to an already-known entity upgrades its trust kind
+   * (never downgrades). All entities are per-device — there is no
+   * global or pre-defined trust hierarchy.
    */
   async subscribe(
     publicKey: Uint8Array,
@@ -78,10 +89,8 @@ export class TrustEngine {
     metadata: Record<string, string> = {},
   ): Promise<Entity> {
     const id = keyIdFromPublicKey(publicKey);
-    // Check if already exists — upgrade trust kind if so
     const existing = await this.store.getEntity(id);
     if (existing) {
-      // Don't downgrade
       const mergedKind = trustKindPriority(existing.trustKind, trustKind);
       const updated: Entity = {
         ...existing,
@@ -106,8 +115,9 @@ export class TrustEngine {
   }
 
   /**
-   * Unsubscribe from an entity. Removes them from the trust graph entirely
-   * along with their delegations.
+   * Unsubscribe from an entity. Removes them and all their delegations
+   * from the trust graph. The user's personal choice — no global authority
+   * can override this.
    */
   async unsubscribe(id: KeyId): Promise<void> {
     await this.store.removeEntity(id);
@@ -122,12 +132,24 @@ export class TrustEngine {
 
   /**
    * List all entities, optionally filtered by trust kind.
+   * Returns the user's entire trust graph — the entities they have
+   * subscribed to plus any auto-registered via ensureEntity().
    */
   async listEntities(trustKind?: TrustKind): Promise<Entity[]> {
     if (trustKind) {
       return this.store.listEntitiesByKind(trustKind);
     }
     return this.store.listEntities();
+  }
+
+  /**
+   * List entities the user has explicitly subscribed to (root or direct),
+   * excluding auto-registered entities.
+   * This is the "who do I trust?" view.
+   */
+  async listSubscribed(): Promise<Entity[]> {
+    const all = await this.store.listEntities();
+    return all.filter((e) => e.trustKind === 'root' || e.trustKind === 'direct');
   }
 
   /**
@@ -373,7 +395,12 @@ export class TrustEngine {
     // The delegate's public key is embedded in the KeyId (hex of 32 bytes).
     await this.ensureDelegatedEntity(delegate);
 
-    // Create the delegation record
+    // Create the delegation record.
+    // Delegations are STORED IN MEMORY ONLY by default (isPersistent() returns
+    // false). On restart the graph is rebuilt from signed delegation statements
+    // received over the mesh. This prevents a seized phone from revealing the
+    // organizational hierarchy — the one data structure the mesh layer works
+    // hard to never create (see docs/DESIGN.md).
     const delegation: Delegation = {
       id: signed.statement.id,
       issuer: issuer.id,

@@ -1,14 +1,38 @@
 /**
  * Pre-loaded root entity public keys.
  *
- * These are the ultimate trust anchors — entities that the app trusts by
- * default without any prior interaction. The Coordinating Committee's key
- * would go here, distributed with the app binary.
+ * THIS ARRAY IS DELIBERATELY EMPTY. See below for why.
  *
- * Each entry is a hex-encoded 32-byte Ed25519 public key and a human name.
+ * A root key shipped in the binary is a single coercion / subpoena / compromise
+ * target: whoever holds the corresponding secret key can push "trusted"
+ * statements to every install. That is precisely the single point of failure
+ * this project exists to avoid (see PROPOSAL.md: "no accounts, no phone
+ * numbers, no server — nothing to subpoena, nothing to seize").
  *
- * During integration, the app calls:
- *   trustEngine.subscribe(hexToBytes(entry.keyHex), entry.name, 'root', entry.metadata)
+ * Instead of shipping root keys, the app uses a subscription model:
+ *   - Users subscribe to entities they personally trust via `subscribe()`
+ *   - Trust anchors propagate through the mesh as signed statements
+ *   - The Coordinating Committee's key arrives the same way any contact does:
+ *     by scanning a QR code, pasting a key, or accepting a signed delegation
+ *     from someone you already trust
+ *   - No global authority. Every user curates their own trust graph.
+ *
+ * If a root key must be distributed with the app (e.g. for an emergency
+ * broadcast validator that must work offline from first launch), the entry
+ * format is:
+ *
+ *   {
+ *     keyHex: 'abcd1234...',  // 32-byte Ed25519 public key as lowercase hex
+ *     name: 'Coordinating Committee',
+ *     metadata: { organization: 'Protest Coordination Network' },
+ *   }
+ *
+ * Before adding anything here, document:
+ *   1. Who holds the corresponding secret key and how it is protected
+ *      (threshold signing? hardware module? destroyed after ceremony?)
+ *   2. What the revocation plan is if that key is compromised
+ *      (can the app revoke it without a binary update?)
+ *   3. Why this entity cannot be subscribed to at runtime via subscribe()
  */
 
 export interface RootKeyEntry {
@@ -21,9 +45,6 @@ export interface RootKeyEntry {
 }
 
 /**
- * Pre-loaded root keys. Empty by default — fill in during integration.
- *
- * Format: 32-byte Ed25519 public key as lowercase hex.
- * Example: { keyHex: 'abcd1234...', name: 'Coordinating Committee' }
+ * Pre-loaded root keys. Empty by design — see module comment above.
  */
 export const PRELOADED_ROOTS: RootKeyEntry[] = [];
