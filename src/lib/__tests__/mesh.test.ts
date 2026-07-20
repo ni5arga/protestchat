@@ -18,7 +18,7 @@ import { describe, it } from 'node:test';
 
 import { fromBase64, toBase64, toUtf8 } from '../bytes';
 import type { Identity, PublicIdentity } from '../crypto-core';
-import { PUBLIC_CHANNEL_KEY, identityFromSeed, randomId, seal } from '../crypto-core';
+import { PUBLIC_CHANNEL_KEY, identityFromSeed, open, randomId, seal } from '../crypto-core';
 import { MeshEngine } from '../mesh';
 import type { Envelope } from '../protocol';
 import {
@@ -177,8 +177,17 @@ async function spawn(world: World, id: string): Promise<Node> {
   const engine = new MeshEngine(transport, store);
   const read: Node['read'] = [];
   engine.onMessage = (conversationId, sender, text) => void read.push({ conversationId, sender, text });
+  engine.getLocalPrekeys().ensureReady();
   await engine.start(identity, id);
   return { id, identity, pub: publicOf(identity), engine, store, transport, read };
+}
+
+/** Simulate in-person QR exchange of prekey bundles (both directions). */
+function introduce(a: Node, b: Node): void {
+  const aBundle = a.engine.getLocalPrekeys().bundleForQr(a.identity);
+  const bBundle = b.engine.getLocalPrekeys().bundleForQr(b.identity);
+  assert.equal(a.engine.absorbPeerBundle(b.pub, bBundle), true);
+  assert.equal(b.engine.absorbPeerBundle(a.pub, aBundle), true);
 }
 
 /**
@@ -897,5 +906,92 @@ describe('delivery receipts', () => {
 
       assert.equal(inbox(C).length, 1);
       assert.equal(stateOf(A, id), 'delivered');
+    }));
+});
+
+describe('forward secrecy (mesh e2e)', () => {
+  it('OTK-sealed direct message opens, then is dead after consume even with identity seed', () =>
+    scenario(['A', 'B'], async ({ A, B }, world) => {
+      introduce(A, B);
+      world.connect('A', 'B');
+      await world.settle();
+
+      assert.equal(A.engine.getPeerPrekeys().otkCount(B.pub.publicId) > 0, true);
+
+      await A.engine.sendText(B.pub, 'fs-direct');
+      await world.settle();
+
+      assert.deepEqual(
+        inbox(B).map((m) => m.text),
+        ['fs-direct'],
+      );
+
+      // Capture the sealed payload A injected and prove long-term seed cannot reopen.
+      const sealedPayloads = injected(A)
+        .map((e) => decodeEnvelope(fromBase64(e.raw)))
+        .filter((e): e is NonNullable<typeof e> => !!e && e.type === EnvelopeType.Sealed)
+        .map((e) => e.payload);
+
+      assert.ok(sealedPayloads.length >= 1);
+      const bobClone = identityFromSeed(B.identity.edSecret);
+      for (const payload of sealedPayloads) {
+        // B already consumed the OTK on open; remaining secrets + long-term must fail.
+        assert.equal(open(bobClone, payload, B.engine.getLocalPrekeys().secretsForOpen()), null);
+        assert.equal(open(bobClone, payload, []), null);
+      }
+    }));
+
+  it('replenishes OTKs in-band via receipts so a long conversation stays on OTKs', () =>
+    scenario(['A', 'B'], async ({ A, B }, world) => {
+      introduce(A, B);
+      world.connect('A', 'B');
+      await world.settle();
+
+      // Burn through the intro OTK pool and keep going — receipts carry replenishment.
+      for (let i = 0; i < 40; i++) {
+        await A.engine.sendText(B.pub, `ping-${i}`);
+        await world.settle();
+        assert.equal(inbox(B).at(-1)?.text, `ping-${i}`);
+      }
+
+      // Still sealing with OTKs (not fallen back to long-term-only book).
+      assert.equal(A.engine.getPeerPrekeys().otkCount(B.pub.publicId) > 0, true);
+    }));
+
+  it('group fan-out uses OTKs per member after introduce', (t) =>
+    scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      introduce(A, B);
+      introduce(A, C);
+      world.connect('A', 'B');
+      world.connect('A', 'C');
+      await world.settle();
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const sending = A.engine.sendToGroup('g-fs', [B.pub, C.pub], 'fs-group');
+      await world.settle();
+      t.mock.timers.tick(4000);
+      await sending;
+      await world.settle();
+      t.mock.timers.reset();
+
+      assert.equal(inbox(B).some((m) => m.text === 'fs-group'), true);
+      assert.equal(inbox(C).some((m) => m.text === 'fs-group'), true);
+    }));
+
+  it('relay still cannot read OTK-sealed mail', () =>
+    scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      introduce(A, C);
+      world.connect('A', 'B');
+      world.connect('B', 'C');
+      await world.settle();
+
+      await A.engine.sendText(C.pub, 'relayed-fs');
+      await world.settle();
+
+      assert.equal(plaintextAnywhere(B, 'relayed-fs'), false);
+      assert.deepEqual(
+        inbox(C).map((m) => m.text),
+        ['relayed-fs'],
+      );
     }));
 });

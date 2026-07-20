@@ -2,49 +2,42 @@
  * Contact introduction codes (QR / paste).
  *
  * v1: protestchat:<publicId>
- * v2: protestchat:v2:<publicId>:<signedReceiveKey>
+ * v2: protestchat:v2:<publicId>:<prekeyBundle>
  *
- * v2 carries a signed receive key so the scanner can seal with forward secrecy
- * from the first message, without a key-distribution server.
+ * v2 carries a signed prekey + one-time prekey publics so the scanner can seal
+ * with per-message forward secrecy from the first message.
  */
 
-import type { PublicIdentity, SignedReceiveKey } from './crypto-core';
-import {
-  decodeSignedReceiveKey,
-  encodeSignedReceiveKey,
-  parsePublicId,
-  verifyReceiveKey,
-} from './crypto-core';
+import type { PublicIdentity } from './crypto-core';
+import { parsePublicId, verifyReceiveKey } from './crypto-core';
+import type { PrekeyBundle } from './prekeys';
+import { decodeBundle, encodeBundle } from './prekeys';
 
 export const CONTACT_CODE_PREFIX = 'protestchat:';
 
 export type ContactCode = {
   identity: PublicIdentity;
-  /** Present when the code was v2 and the signature verified. */
-  receiveKey: SignedReceiveKey | null;
+  /** Present when the code was v2 and the SPK signature verified. */
+  bundle: PrekeyBundle | null;
 };
 
-/** Build a v2 code when we have a signed receive key; otherwise v1. */
-export function encodeContactCode(
-  publicId: string,
-  signedReceiveKey?: SignedReceiveKey | null,
-): string {
-  if (signedReceiveKey) {
-    return `${CONTACT_CODE_PREFIX}v2:${publicId}:${encodeSignedReceiveKey(signedReceiveKey)}`;
+/** Build a v2 code when we have a prekey bundle; otherwise v1. */
+export function encodeContactCode(publicId: string, bundle?: PrekeyBundle | null): string {
+  if (bundle) {
+    return `${CONTACT_CODE_PREFIX}v2:${publicId}:${encodeBundle(bundle)}`;
   }
   return `${CONTACT_CODE_PREFIX}${publicId}`;
 }
 
 /**
- * Parse a pasted/scanned code. Invalid receive-key signatures are rejected
- * entirely — better to fail introduction than store an attacker-chosen key.
+ * Parse a pasted/scanned code. Invalid prekey signatures are rejected
+ * entirely — better to fail introduction than store attacker-chosen keys.
  */
 export function decodeContactCode(raw: string): ContactCode | null {
   const trimmed = raw.trim();
   if (!trimmed.startsWith(CONTACT_CODE_PREFIX)) {
-    // Bare publicId (typed without prefix) — still accept.
     const identity = parsePublicId(trimmed);
-    return identity ? { identity, receiveKey: null } : null;
+    return identity ? { identity, bundle: null } : null;
   }
 
   const rest = trimmed.slice(CONTACT_CODE_PREFIX.length);
@@ -57,11 +50,11 @@ export function decodeContactCode(raw: string): ContactCode | null {
     const keyPart = body.slice(colon + 1);
     const identity = parsePublicId(publicId);
     if (!identity) return null;
-    const receiveKey = decodeSignedReceiveKey(keyPart);
-    if (!receiveKey || !verifyReceiveKey(identity, receiveKey)) return null;
-    return { identity, receiveKey };
+    const bundle = decodeBundle(keyPart);
+    if (!bundle || !verifyReceiveKey(identity, bundle.signed)) return null;
+    return { identity, bundle };
   }
 
   const identity = parsePublicId(rest);
-  return identity ? { identity, receiveKey: null } : null;
+  return identity ? { identity, bundle: null } : null;
 }

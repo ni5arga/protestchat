@@ -1,30 +1,26 @@
 /**
- * Forward-secrecy properties for signed receive keys.
- *
- * The claim under test: after a recipient deletes a receive-key secret,
- * compromise of their long-term identity seed must not open messages that
- * were sealed to that receive key.
+ * Per-message forward secrecy: one-time prekeys + consume-on-open.
  */
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { equalBytes, toUtf8 } from '../bytes';
+import { toUtf8 } from '../bytes';
+import { decodeContactCode, encodeContactCode } from '../contact-code';
 import {
-  RECEIVE_KEY_RETENTION_MS,
-  RECEIVE_KEY_ROTATION_MS,
-  ReceiveKeyRing,
-  decodeSignedReceiveKey,
-  encodeSignedReceiveKey,
-  generateReceiveKey,
   identityFromSeed,
   isForwardSecretAgreement,
   open,
   seal,
-  signReceiveKey,
   verifyReceiveKey,
 } from '../crypto-core';
-import { decodeContactCode, encodeContactCode } from '../contact-code';
+import {
+  LocalPrekeys,
+  PeerPrekeyBook,
+  QR_OTK_COUNT,
+  decodeBundle,
+  encodeBundle,
+} from '../prekeys';
 
 const alice = identityFromSeed(new Uint8Array(32).fill(1));
 const bob = identityFromSeed(new Uint8Array(32).fill(2));
@@ -36,227 +32,139 @@ const pub = (id: typeof alice) => ({
   publicId: id.publicId,
 });
 
-describe('signed receive keys', () => {
-  it('round-trips encoding and verifies under the owner', () => {
-    const key = generateReceiveKey(1_700_000_000_000);
-    const signed = signReceiveKey(bob, key);
-    assert.equal(verifyReceiveKey(pub(bob), signed), true);
-    const decoded = decodeSignedReceiveKey(encodeSignedReceiveKey(signed));
+describe('prekey bundles', () => {
+  it('QR bundle verifies and round-trips', () => {
+    const local = new LocalPrekeys();
+    local.ensureReady();
+    const bundle = local.bundleForQr(bob, QR_OTK_COUNT);
+    assert.equal(verifyReceiveKey(pub(bob), bundle.signed), true);
+    assert.equal(bundle.oneTimePublics.length, QR_OTK_COUNT);
+    const decoded = decodeBundle(encodeBundle(bundle));
     assert.ok(decoded);
-    assert.deepEqual([...decoded.public], [...signed.public]);
-    assert.equal(decoded.createdAt, signed.createdAt);
-    assert.equal(verifyReceiveKey(pub(bob), decoded), true);
+    assert.equal(decoded.oneTimePublics.length, QR_OTK_COUNT);
+    assert.equal(verifyReceiveKey(pub(bob), decoded.signed), true);
   });
 
-  it('rejects a receive key signed by someone else', () => {
-    const key = generateReceiveKey();
-    const forged = signReceiveKey(eve, key);
-    assert.equal(verifyReceiveKey(pub(bob), forged), false);
+  it('contact code v2 embeds a full bundle; v1 still works', () => {
+    const local = new LocalPrekeys();
+    const bundle = local.bundleForQr(bob);
+    const v2 = decodeContactCode(encodeContactCode(bob.publicId, bundle));
+    assert.ok(v2?.bundle);
+    assert.equal(v2.bundle.oneTimePublics.length, QR_OTK_COUNT);
+
+    const v1 = decodeContactCode(`protestchat:${bob.publicId}`);
+    assert.ok(v1);
+    assert.equal(v1.bundle, null);
   });
 
-  it('rejects truncated or garbage encodings', () => {
-    assert.equal(decodeSignedReceiveKey(''), null);
-    assert.equal(decodeSignedReceiveKey('AAAA'), null);
-    assert.equal(decodeSignedReceiveKey(encodeSignedReceiveKey(signReceiveKey(bob, generateReceiveKey())).slice(0, 10)), null);
-  });
-});
-
-describe('contact code v2', () => {
-  it('embeds a verified receive key', () => {
-    const signed = signReceiveKey(bob, generateReceiveKey(42));
-    const code = encodeContactCode(bob.publicId, signed);
-    const parsed = decodeContactCode(code);
-    assert.ok(parsed);
-    assert.equal(parsed.identity.publicId, bob.publicId);
-    assert.ok(parsed.receiveKey);
-    assert.deepEqual([...parsed.receiveKey.public], [...signed.public]);
-  });
-
-  it('still accepts legacy v1 codes without a receive key', () => {
-    const parsed = decodeContactCode(`protestchat:${bob.publicId}`);
-    assert.ok(parsed);
-    assert.equal(parsed.identity.publicId, bob.publicId);
-    assert.equal(parsed.receiveKey, null);
-  });
-
-  it('rejects v2 codes with a bad signature rather than accepting the identity alone', () => {
-    const signed = signReceiveKey(bob, generateReceiveKey());
-    const tampered = {
-      ...signed,
-      signature: Uint8Array.from(signed.signature.map((b, i) => (i === 0 ? b ^ 0xff : b))),
-    };
-    const code = encodeContactCode(bob.publicId, tampered);
+  it('rejects a bundle whose SPK is signed by the wrong identity', () => {
+    const local = new LocalPrekeys();
+    const bundle = local.bundleForQr(eve);
+    const code = encodeContactCode(bob.publicId, bundle);
     assert.equal(decodeContactCode(code), null);
   });
 });
 
-describe('seal to receive key', () => {
-  it('delivers when the recipient still holds the secret', () => {
-    const rk = generateReceiveKey();
-    const sealed = seal(alice, pub(bob), toUtf8('meet at gate 3'), rk.public);
-    const opened = open(bob, sealed, [rk.secret]);
+describe('per-message FS via OTK', () => {
+  it('seals to an OTK, opens, consumes — long-term seed cannot reopen', () => {
+    const bobLocal = new LocalPrekeys();
+    bobLocal.ensureReady();
+    const bundle = bobLocal.bundleForQr(bob);
+
+    const aliceBook = new PeerPrekeyBook();
+    assert.equal(aliceBook.absorb(pub(bob), bundle), true);
+
+    const { public: agreement, kind } = aliceBook.takeAgreementPublic(pub(bob));
+    assert.equal(kind, 'otk');
+
+    const sealed = seal(alice, pub(bob), toUtf8('burn after reading'), agreement);
+    const opened = open(bob, sealed, bobLocal.secretsForOpen());
     assert.ok(opened);
-    assert.equal(Buffer.from(opened.body).toString('utf8'), 'meet at gate 3');
-    assert.ok(opened.agreementPublic);
-    assert.deepEqual([...opened.agreementPublic], [...rk.public]);
+    assert.equal(Buffer.from(opened.body).toString('utf8'), 'burn after reading');
     assert.equal(isForwardSecretAgreement(pub(bob), opened.agreementPublic!), true);
-  });
 
-  it('is opaque to a third party without the receive secret', () => {
-    const rk = generateReceiveKey();
-    const sealed = seal(alice, pub(bob), toUtf8('secret'), rk.public);
-    assert.equal(open(eve, sealed, []), null);
-    assert.equal(open(eve, sealed, [generateReceiveKey().secret]), null);
-    // Possession of the receive secret *is* decryption capability — that is
-    // why wiping it creates FS. Eve with rk.secret can open; that is expected.
-    assert.ok(open(eve, sealed, [rk.secret]));
-  });
+    assert.equal(bobLocal.consumeOtk(opened.agreementPublic!), true);
 
-  it('FALLBACK: long-term seal still works with no receive secrets', () => {
-    const sealed = seal(alice, pub(bob), toUtf8('legacy'));
-    const opened = open(bob, sealed);
-    assert.ok(opened);
-    assert.equal(isForwardSecretAgreement(pub(bob), opened.agreementPublic!), false);
-  });
-
-  it('THE FS CLAIM: long-term identity compromise cannot open a sealed-to-receive-key message after the secret is gone', () => {
-    const rk = generateReceiveKey();
-    const sealed = seal(alice, pub(bob), toUtf8('burn after reading'), rk.public);
-
-    // Recipient still has the secret → opens.
-    assert.ok(open(bob, sealed, [rk.secret]));
-
-    // Adversary steals Bob's long-term seed (same identity) but NOT the wiped
-    // receive-key secret. This is the seizure-after-rotation case.
-    const bobAfterCompromise = identityFromSeed(new Uint8Array(32).fill(2));
+    // Identity compromise after OTK wipe.
+    const bobCompromised = identityFromSeed(new Uint8Array(32).fill(2));
     assert.equal(
-      open(bobAfterCompromise, sealed, []),
+      open(bobCompromised, sealed, bobLocal.secretsForOpen()),
       null,
-      'long-term secret alone must not open FS-sealed mail',
+      'consumed OTK + long-term seed must not reopen',
     );
+    assert.equal(open(bobCompromised, sealed, []), null);
   });
 
-  it('cannot open with the wrong receive secret even if long-term would have worked for a legacy seal', () => {
-    const rk = generateReceiveKey();
-    const other = generateReceiveKey();
-    const sealed = seal(alice, pub(bob), toUtf8('hi'), rk.public);
-    assert.equal(open(bob, sealed, [other.secret]), null);
+  it('does not reuse an OTK public for two seals', () => {
+    const bobLocal = new LocalPrekeys();
+    const bundle = bobLocal.bundleForQr(bob, 2);
+    const book = new PeerPrekeyBook();
+    book.absorb(pub(bob), bundle);
+
+    const a = book.takeAgreementPublic(pub(bob));
+    const b = book.takeAgreementPublic(pub(bob));
+    assert.equal(a.kind, 'otk');
+    assert.equal(b.kind, 'otk');
+    assert.notDeepEqual([...a.public], [...b.public]);
+  });
+
+  it('falls back to SPK then long-term when OTKs are exhausted', () => {
+    const bobLocal = new LocalPrekeys();
+    const bundle = bobLocal.bundleForQr(bob, 1);
+    const book = new PeerPrekeyBook();
+    book.absorb(pub(bob), bundle);
+
+    assert.equal(book.takeAgreementPublic(pub(bob)).kind, 'otk');
+    assert.equal(book.takeAgreementPublic(pub(bob)).kind, 'spk');
+
+    const empty = new PeerPrekeyBook();
+    assert.equal(empty.takeAgreementPublic(pub(bob)).kind, 'long-term');
+  });
+
+  it('in-band replenishment restores OTK sealing after exhaustion', () => {
+    const bobLocal = new LocalPrekeys();
+    const intro = bobLocal.bundleForQr(bob, 1);
+    const aliceBook = new PeerPrekeyBook();
+    aliceBook.absorb(pub(bob), intro);
+    aliceBook.takeAgreementPublic(pub(bob)); // exhaust the one OTK
+    assert.equal(aliceBook.takeAgreementPublic(pub(bob)).kind, 'spk');
+
+    const replenish = bobLocal.updateForPeer(bob, alice.publicId, 4);
+    assert.equal(aliceBook.absorb(pub(bob), replenish), true);
+    assert.equal(aliceBook.takeAgreementPublic(pub(bob)).kind, 'otk');
+  });
+
+  it('OTKs issued to Alice are not the same set issued to Carol', () => {
+    const bobLocal = new LocalPrekeys();
+    bobLocal.ensureReady();
+    const forAlice = bobLocal.updateForPeer(bob, alice.publicId, 4);
+    const forCarol = bobLocal.updateForPeer(bob, eve.publicId, 4);
+    const aliceSet = new Set(forAlice.oneTimePublics.map((p) => Buffer.from(p).toString('hex')));
+    for (const p of forCarol.oneTimePublics) {
+      assert.equal(aliceSet.has(Buffer.from(p).toString('hex')), false);
+    }
   });
 });
 
-describe('ReceiveKeyRing', () => {
-  it('rotates when the current key ages past the rotation interval', () => {
-    const ring = new ReceiveKeyRing();
-    const t0 = 1_000_000;
-    ring.ensureFresh(t0);
-    const first = ring.current()!.public;
-    assert.equal(ring.ensureFresh(t0 + 1_000), false);
-    assert.deepEqual([...ring.current()!.public], [...first]);
-    assert.equal(ring.ensureFresh(t0 + RECEIVE_KEY_ROTATION_MS), true);
-    assert.equal(equalBytes(ring.current()!.public, first), false);
-    // Old secret retained for open.
-    assert.equal(ring.secrets().length, 2);
-  });
+describe('stress', () => {
+  it('100 sequential OTK messages each die after consume', () => {
+    const bobLocal = new LocalPrekeys();
+    bobLocal.ensureReady();
+    const aliceBook = new PeerPrekeyBook();
+    aliceBook.absorb(pub(bob), bobLocal.bundleForQr(bob, 24));
 
-  it('wipes secrets past retention — this is the FS ratchet step', () => {
-    const ring = new ReceiveKeyRing();
-    const t0 = 1_000_000;
-    ring.ensureFresh(t0);
-    const old = ring.current()!;
-    ring.ensureFresh(t0 + RECEIVE_KEY_ROTATION_MS);
-    assert.equal(ring.secrets().length, 2);
-
-    const wiped = ring.sweep(t0 + RECEIVE_KEY_ROTATION_MS + RECEIVE_KEY_RETENTION_MS);
-    assert.ok(wiped >= 1);
-    assert.equal(
-      ring.secrets().some((s) => equalBytes(s, old.secret)),
-      false,
-      'retired secret must be gone',
-    );
-  });
-
-  it('never leaves the ring empty after a sweep', () => {
-    const ring = new ReceiveKeyRing([generateReceiveKey(1)]);
-    ring.sweep(1 + RECEIVE_KEY_RETENTION_MS + 1);
-    assert.ok(ring.current());
-    assert.equal(ring.secrets().length, 1);
-  });
-});
-
-describe('stress / edge cases', () => {
-  it('opens the correct message among many receive secrets (trial decrypt)', () => {
-    const secrets: Uint8Array[] = [];
-    let targetPublic: Uint8Array | null = null;
-    let targetSecret: Uint8Array | null = null;
-    for (let i = 0; i < 64; i++) {
-      const k = generateReceiveKey(i);
-      secrets.push(k.secret);
-      if (i === 37) {
-        targetPublic = k.public;
-        targetSecret = k.secret;
+    for (let i = 0; i < 100; i++) {
+      if (aliceBook.otkCount(bob.publicId) === 0) {
+        aliceBook.absorb(pub(bob), bobLocal.updateForPeer(bob, alice.publicId, 16));
       }
+      const { public: agreement, kind } = aliceBook.takeAgreementPublic(pub(bob));
+      assert.equal(kind, 'otk', `message ${i} should use OTK`);
+      const sealed = seal(alice, pub(bob), toUtf8(`m-${i}`), agreement);
+      const opened = open(bob, sealed, bobLocal.secretsForOpen());
+      assert.ok(opened);
+      bobLocal.consumeOtk(opened.agreementPublic!);
+      assert.equal(open(bob, sealed, bobLocal.secretsForOpen()), null);
+      assert.equal(open(bob, sealed, []), null);
     }
-    const sealed = seal(alice, pub(bob), toUtf8(`needle-${37}`), targetPublic!);
-    const opened = open(bob, sealed, secrets);
-    assert.ok(opened);
-    assert.equal(Buffer.from(opened.body).toString('utf8'), 'needle-37');
-    assert.ok(equalBytes(opened.agreementPublic!, targetPublic!));
-    void targetSecret;
-  });
-
-  it('survives sealing many messages to a rotating ring without cross-talk', () => {
-    const ring = new ReceiveKeyRing();
-    let now = 1_000_000;
-    const sealed: { ct: Uint8Array; text: string }[] = [];
-
-    for (let i = 0; i < 20; i++) {
-      ring.ensureFresh(now);
-      const text = `msg-${i}`;
-      sealed.push({
-        ct: seal(alice, pub(bob), toUtf8(text), ring.current()!.public),
-        text,
-      });
-      now += RECEIVE_KEY_ROTATION_MS / 4;
-    }
-
-    // Same timeline on the recipient: every ciphertext must still open under
-    // the retained ring (no sweep — within the 6h retention window).
-    for (const item of sealed) {
-      const opened = open(bob, item.ct, ring.secrets());
-      assert.ok(opened, `failed to open ${item.text}`);
-      assert.equal(Buffer.from(opened.body).toString('utf8'), item.text);
-    }
-  });
-
-  it('after full retention elapses, old ciphertexts are dead even with identity seed', () => {
-    const ring = new ReceiveKeyRing();
-    const t0 = 5_000_000;
-    ring.ensureFresh(t0);
-    const sealed = seal(alice, pub(bob), toUtf8('old'), ring.current()!.public);
-
-    ring.ensureFresh(t0 + RECEIVE_KEY_ROTATION_MS);
-    ring.sweep(t0 + RECEIVE_KEY_RETENTION_MS + 1);
-
-    assert.equal(open(bob, sealed, ring.secrets()), null);
-    assert.equal(open(bob, sealed, []), null);
-  });
-
-  it('high-volume seal/open under receive keys does not throw or mis-deliver', () => {
-    const rk = generateReceiveKey();
-    for (let i = 0; i < 200; i++) {
-      const sealed = seal(alice, pub(bob), toUtf8(`bulk-${i}`), rk.public);
-      const opened = open(bob, sealed, [rk.secret]);
-      assert.equal(Buffer.from(opened!.body).toString('utf8'), `bulk-${i}`);
-    }
-  });
-
-  it('channel and direct layouts remain distinguishable by trial decryption alone', async () => {
-    const { deriveChannelKey, sealToKey, openWithKey } = await import('../crypto-core');
-    const key = deriveChannelKey('gate4', 'pw pw pw');
-    const rk = generateReceiveKey();
-    const direct = seal(alice, pub(bob), toUtf8('private'), rk.public);
-    const channel = sealToKey(alice, key, toUtf8('channel'));
-    assert.equal(openWithKey(key, direct), null);
-    assert.equal(open(bob, channel, [rk.secret]), null);
   });
 });

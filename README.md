@@ -168,7 +168,7 @@ The channel test worth doing deliberately: join `gate4` on two phones with the s
 ## What is not built yet
 
 - Background relaying (iOS suspends BLE aggressively — the biggest open problem)
-- Per-message forward secrecy / Double Ratchet (signed receive keys cover async FS for direct/group after a v2 intro — see `docs/FORWARD-SECRECY.md`)
+- Double Ratchet / post-compromise security (per-message FS via OTKs is in for direct/group — see `docs/FORWARD-SECRECY.md`)
 - Images
 - Argon2id for channel passphrases (currently scrypt N=2^14, see the threat model)
 - Any passphrase strength enforcement
@@ -182,7 +182,7 @@ The channel test worth doing deliberately: join `gate4` on two phones with the s
 
 Most useful right now, in order:
 
-1. Applied cryptographers — review the signed-receive-key FS construction (`docs/FORWARD-SECRECY.md`) and what should come next
+1. Applied cryptographers — review the OTK/SPK FS construction (`docs/FORWARD-SECRECY.md`) and Double Ratchet feasibility under store-and-forward
 2. Anyone who has shipped cross-platform BLE GATT — especially iOS peripheral role and Android OEM quirks
 3. Anyone who has been in a shutdown or jammed protest — what would you actually have used?
 4. Anyone who wants to co-write the threat model

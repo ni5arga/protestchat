@@ -72,9 +72,9 @@ Three deliberate choices:
 2. **The recipient's key is bound into both the KDF salt and the signed transcript.** A ciphertext cannot be re-addressed, and a signature cannot be lifted into a different envelope.
 3. **No recipient field anywhere.** Devices find their own mail by trial decryption. This is more expensive and is the correct trade.
 
-**Forward secrecy (partial).** Direct and group seals target a short-lived **signed receive key** when the sender learned one at introduction (QR v2), not the recipient's long-term X25519. Recipients rotate receive keys ~hourly and delete secrets after 6 hours. Compromise of the long-term identity seed then cannot open messages sealed to already-deleted receive keys.
+**Forward secrecy (direct/group).** Seals prefer a **one-time prekey** from the recipient (QR v2 intro + in-band replenishment). The recipient deletes that OTK secret on open — compromise of the long-term identity seed afterwards cannot open that ciphertext. SPK is the fallback when OTKs are exhausted; long-term identity is legacy-only.
 
-Residuals (see `docs/FORWARD-SECRECY.md`): not per-message FS; no post-compromise ratchet; legacy v1 contacts and channel/broadcast modes have no FS; stale peer receive keys need a re-scan (or a future in-band update) to refresh.
+Residuals (see `docs/FORWARD-SECRECY.md`): no Double Ratchet / post-compromise healing; channel/broadcast have no FS; v1 contact codes have no FS until re-scan.
 
 ## Metadata handling
 
@@ -91,7 +91,7 @@ Residuals (see `docs/FORWARD-SECRECY.md`): not per-message FS; no post-compromis
 
 ## Open problems
 
-1. **Forward secrecy — partially addressed.** Signed receive keys land async FS for direct/group when peers exchanged a v2 contact code. Still missing: per-message FS, post-compromise security, in-band receive-key refresh, channel FS (impossible with a shared passphrase key). Cryptographer review of the construction in `docs/FORWARD-SECRECY.md` remains very welcome.
+1. **Forward secrecy — OTK path shipped for direct/group.** Still missing: Double Ratchet / PCS, channel FS, UI for seal strength. Cryptographer review of `docs/FORWARD-SECRECY.md` welcome.
 2. **Rotating endpoint identifiers — largely addressed, unverified on hardware.** This was the single strongest reason to drop Google Nearby, which gave no control over its advertisement. We now own the radio (`modules/ble-mesh`) and rotate the advertised tag every 15 minutes from fresh CSPRNG bytes, with no counter or hash chain linking one to the next, and no display name or key material in the advertisement at all. Peer identity is established in-band via HELLO instead.
 
    What remains unproven: whether stopping and restarting advertising actually prompts each OS to re-randomise the link-layer BLE address. That is the only lever an app has, and it is not a guarantee. **Someone with a BLE sniffer and two phones could settle this in an afternoon, and it would be a genuinely valuable contribution.**

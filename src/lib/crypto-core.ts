@@ -27,16 +27,11 @@
  *   3. Sender authentication must survive relaying, but must not be verifiable
  *      by relays. So the signature lives INSIDE the ciphertext.
  *
- * FORWARD SECRECY (v2): sealing targets a short-lived *receive key* when the
- * sender knows one, not the recipient's long-term X25519. The recipient rotates
- * receive keys and deletes old secrets after a retention window matching the
- * envelope TTL. Compromise of the long-term identity seed then cannot open
- * messages sealed to already-deleted receive keys.
- *
- * This is signed-prekey-style async FS (no server). It is NOT a Double Ratchet:
- * there is no per-message ratchet and no post-compromise recovery. Channels and
- * public broadcast are unchanged (shared symmetric keys have no FS). See
- * docs/FORWARD-SECRECY.md.
+ * FORWARD SECRECY: sealing targets a one-time prekey (preferred) or signed
+ * prekey when the sender knows one — not the recipient's long-term X25519.
+ * OTK secrets are deleted on successful open (per-message FS). Prekey
+ * lifecycle lives in prekeys.ts; distribution is QR v2 + in-band updates.
+ * Not a Double Ratchet. Channels/public have no FS. See docs/FORWARD-SECRECY.md.
  */
 
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';

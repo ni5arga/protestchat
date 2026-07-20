@@ -9,8 +9,10 @@
 import * as SQLite from 'expo-sqlite';
 
 import { fromBase64, toBase64 } from './bytes';
-import type { ReceiveKey } from './crypto-core';
+import type { ReceiveKey, SignedReceiveKey } from './crypto-core';
 import { RECEIVE_KEY_RETENTION_MS } from './crypto-core';
+import type { PersistedOtk } from './prekeys';
+import { decodeSignedReceiveKey, encodeSignedReceiveKey } from './crypto-core';
 import type { Envelope } from './protocol';
 import { decodeEnvelope, encodeEnvelope } from './protocol';
 import type { MeshStore, Message, MessageState } from './store';
@@ -166,8 +168,7 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
       read_count INTEGER NOT NULL DEFAULT 0
     );
 
-    -- Our short-lived receive-key secrets. Deleting a row after retention is
-    -- what creates forward secrecy for messages sealed to that key.
+    -- Signed prekey secrets we can still open with (ring).
     CREATE TABLE IF NOT EXISTS receive_keys (
       public_b64  TEXT PRIMARY KEY NOT NULL,
       secret_b64  TEXT NOT NULL,
@@ -175,12 +176,19 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
     );
     CREATE INDEX IF NOT EXISTS receive_keys_by_time ON receive_keys (created_at);
 
-    -- Peers' verified receive-key publics (from QR v2). Used as the seal target
-    -- instead of their long-term xPublic when present.
-    CREATE TABLE IF NOT EXISTS contact_receive_keys (
-      public_id         TEXT PRIMARY KEY NOT NULL,
-      receive_public_b64 TEXT NOT NULL,
-      created_at        INTEGER NOT NULL
+    -- One-time prekey secrets. Deleted on successful open (per-message FS).
+    CREATE TABLE IF NOT EXISTS one_time_keys (
+      public_b64  TEXT PRIMARY KEY NOT NULL,
+      secret_b64  TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      issued_to   TEXT
+    );
+
+    -- Peers' verified SPK + queued OTK publics we seal to.
+    CREATE TABLE IF NOT EXISTS peer_prekeys (
+      public_id   TEXT PRIMARY KEY NOT NULL,
+      spk_b64     TEXT,
+      otks_json   TEXT NOT NULL
     );
   `);
 
@@ -581,71 +589,105 @@ export async function sweepExpired(): Promise<void> {
   );
   await d.runAsync(`DELETE FROM messages WHERE first_seen <= ?`, [now - MESSAGE_RETENTION_MS]);
 
-  // Wiping retired receive-key secrets is the FS control — not housekeeping.
+  // Wiping retired prekey secrets is the FS control — not housekeeping.
   await d.runAsync(`DELETE FROM receive_keys WHERE created_at <= ?`, [
+    now - RECEIVE_KEY_RETENTION_MS,
+  ]);
+  await d.runAsync(`DELETE FROM one_time_keys WHERE created_at <= ?`, [
     now - RECEIVE_KEY_RETENTION_MS,
   ]);
 }
 
 // ---------------------------------------------------------------------------
-// Receive keys (forward secrecy)
+// Prekeys (forward secrecy)
 // ---------------------------------------------------------------------------
 
-export async function listReceiveKeys(): Promise<ReceiveKey[]> {
+export async function loadLocalPrekeys(): Promise<{ spk: ReceiveKey[]; otks: PersistedOtk[] }> {
   const d = await getDb();
-  const rows = await d.getAllAsync<{
+  const spkRows = await d.getAllAsync<{
     public_b64: string;
     secret_b64: string;
     created_at: number;
   }>(`SELECT public_b64, secret_b64, created_at FROM receive_keys ORDER BY created_at DESC`);
-  return rows.map((r) => ({
-    public: fromBase64(r.public_b64),
-    secret: fromBase64(r.secret_b64),
-    createdAt: r.created_at,
-  }));
+  const otkRows = await d.getAllAsync<{
+    public_b64: string;
+    secret_b64: string;
+    created_at: number;
+    issued_to: string | null;
+  }>(`SELECT public_b64, secret_b64, created_at, issued_to FROM one_time_keys`);
+  return {
+    spk: spkRows.map((r) => ({
+      public: fromBase64(r.public_b64),
+      secret: fromBase64(r.secret_b64),
+      createdAt: r.created_at,
+    })),
+    otks: otkRows.map((r) => ({
+      public: fromBase64(r.public_b64),
+      secret: fromBase64(r.secret_b64),
+      createdAt: r.created_at,
+      issuedTo: r.issued_to,
+    })),
+  };
 }
 
-export async function replaceReceiveKeys(keys: ReceiveKey[]): Promise<void> {
+export async function saveLocalPrekeys(spk: ReceiveKey[], otks: PersistedOtk[]): Promise<void> {
   const d = await getDb();
-  await d.execAsync('DELETE FROM receive_keys');
-  for (const k of keys) {
+  await d.execAsync('DELETE FROM receive_keys; DELETE FROM one_time_keys;');
+  for (const k of spk) {
     await d.runAsync(
       `INSERT INTO receive_keys (public_b64, secret_b64, created_at) VALUES (?, ?, ?)`,
       [toBase64(k.public), toBase64(k.secret), k.createdAt],
     );
   }
+  for (const o of otks) {
+    await d.runAsync(
+      `INSERT INTO one_time_keys (public_b64, secret_b64, created_at, issued_to) VALUES (?, ?, ?, ?)`,
+      [toBase64(o.public), toBase64(o.secret), o.createdAt, o.issuedTo],
+    );
+  }
 }
 
-export async function setContactReceiveKey(
-  publicId: string,
-  receivePublic: Uint8Array,
-  createdAt: number,
+export async function savePeerPrekeys(
+  entries: { publicId: string; spk: SignedReceiveKey | null; otks: Uint8Array[] }[],
 ): Promise<void> {
   const d = await getDb();
-  await d.runAsync(
-    `INSERT INTO contact_receive_keys (public_id, receive_public_b64, created_at)
-     VALUES (?, ?, ?)
-     ON CONFLICT(public_id) DO UPDATE SET
-       receive_public_b64 = excluded.receive_public_b64,
-       created_at = excluded.created_at`,
-    [publicId, toBase64(receivePublic), createdAt],
-  );
+  await d.execAsync('DELETE FROM peer_prekeys');
+  for (const e of entries) {
+    await d.runAsync(`INSERT INTO peer_prekeys (public_id, spk_b64, otks_json) VALUES (?, ?, ?)`, [
+      e.publicId,
+      e.spk ? encodeSignedReceiveKey(e.spk) : null,
+      JSON.stringify(e.otks.map((p) => toBase64(p))),
+    ]);
+  }
 }
 
-export async function listContactReceiveKeys(): Promise<
-  { publicId: string; receivePublic: Uint8Array; createdAt: number }[]
+export async function loadPeerPrekeys(): Promise<
+  { publicId: string; spk: SignedReceiveKey | null; otks: Uint8Array[] }[]
 > {
   const d = await getDb();
   const rows = await d.getAllAsync<{
     public_id: string;
-    receive_public_b64: string;
-    created_at: number;
-  }>(`SELECT public_id, receive_public_b64, created_at FROM contact_receive_keys`);
-  return rows.map((r) => ({
-    publicId: r.public_id,
-    receivePublic: fromBase64(r.receive_public_b64),
-    createdAt: r.created_at,
-  }));
+    spk_b64: string | null;
+    otks_json: string;
+  }>(`SELECT public_id, spk_b64, otks_json FROM peer_prekeys`);
+  return rows.map((r) => {
+    let otks: Uint8Array[] = [];
+    try {
+      const parsed = JSON.parse(r.otks_json);
+      if (Array.isArray(parsed)) {
+        otks = parsed
+          .filter((x): x is string => typeof x === 'string')
+          .map((s) => fromBase64(s));
+      }
+    } catch {
+      otks = [];
+    }
+    return {
+      publicId: r.public_id,
+      spk: r.spk_b64 ? decodeSignedReceiveKey(r.spk_b64) : null,
+      otks,
+    };
+  });
 }
 
 /**
@@ -689,7 +731,8 @@ export async function wipeEverything(): Promise<void> {
     DELETE FROM channels;
     DELETE FROM conversation_reads;
     DELETE FROM receive_keys;
-    DELETE FROM contact_receive_keys;
+    DELETE FROM one_time_keys;
+    DELETE FROM peer_prekeys;
     VACUUM;
   `);
 }

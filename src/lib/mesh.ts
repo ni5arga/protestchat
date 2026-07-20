@@ -23,15 +23,9 @@ import { concat, fromBase64, fromUtf8, toBase64, toUtf8 } from './bytes';
 // through start() — and importing the core directly is what lets this file be
 // loaded and tested off-device.
 import type { Identity, OpenedMessage, PublicIdentity } from './crypto-core';
-import {
-  ReceiveKeyRing,
-  open,
-  openWithKey,
-  randomId,
-  seal,
-  sealToKey,
-} from './crypto-core';
-import type { Envelope, MessageBody } from './protocol';
+import { open, openWithKey, randomId, seal, sealToKey } from './crypto-core';
+import { LocalPrekeys, PeerPrekeyBook } from './prekeys';
+import type { Envelope, MessageBody, PrekeyUpdateWire } from './protocol';
 import {
   DEFAULTS,
   EnvelopeType,
@@ -84,17 +78,17 @@ export class MeshEngine {
    */
   private channelKeys: { id: string; key: Uint8Array }[] = [];
 
-  /**
-   * Our short-lived receive-key secrets for forward-secret inbound seals.
-   * Empty ring falls back to the long-term identity key (v1 behaviour).
-   */
-  private receiveKeys = new ReceiveKeyRing();
+  /** Our SPK + OTK secrets. Empty → long-term fallback only (no FS). */
+  private localPrekeys = new LocalPrekeys();
+
+  /** Peers' SPK/OTK publics we seal to. */
+  private peerPrekeys = new PeerPrekeyBook();
 
   /**
-   * Peer publicId → their current receive-key public (verified at intro).
-   * When missing, outbound seals use their long-term xPublic (no FS).
+   * Optional hook after local OTK/SPK state changes so the app can persist.
+   * Tests leave this null.
    */
-  private peerReceivePublics = new Map<string, Uint8Array>();
+  onPrekeysChanged: (() => void) | null = null;
 
   /**
    * Fired when a message we can read is opened.
@@ -109,25 +103,25 @@ export class MeshEngine {
     this.channelKeys = keys;
   }
 
-  /** Replace our receive-key ring (boot / after rotation persist). */
-  setReceiveKeyRing(ring: ReceiveKeyRing): void {
-    this.receiveKeys = ring;
+  setLocalPrekeys(local: LocalPrekeys): void {
+    this.localPrekeys = local;
   }
 
-  /** Publish/replace the sealed-to public we know for a peer. */
-  setPeerReceivePublic(publicId: string, receivePublic: Uint8Array | null): void {
-    if (!receivePublic) this.peerReceivePublics.delete(publicId);
-    else this.peerReceivePublics.set(publicId, receivePublic);
+  setPeerPrekeys(book: PeerPrekeyBook): void {
+    this.peerPrekeys = book;
   }
 
-  /** Bulk-load peer receive publics after boot. */
-  setPeerReceivePublics(entries: { publicId: string; receivePublic: Uint8Array }[]): void {
-    this.peerReceivePublics.clear();
-    for (const e of entries) this.peerReceivePublics.set(e.publicId, e.receivePublic);
+  getLocalPrekeys(): LocalPrekeys {
+    return this.localPrekeys;
   }
 
-  private agreementPublicFor(recipient: PublicIdentity): Uint8Array {
-    return this.peerReceivePublics.get(recipient.publicId) ?? recipient.xPublic;
+  getPeerPrekeys(): PeerPrekeyBook {
+    return this.peerPrekeys;
+  }
+
+  /** Absorb a verified intro/replenishment bundle for a peer (QR or tests). */
+  absorbPeerBundle(owner: PublicIdentity, bundle: Parameters<PeerPrekeyBook['absorb']>[1]): boolean {
+    return this.peerPrekeys.absorb(owner, bundle);
   }
 
   /**
@@ -245,6 +239,8 @@ export class MeshEngine {
     // the seized-unlocked-phone case remains out of scope (see threat model).
     this.identity = null;
     this.channelKeys = [];
+    this.localPrekeys = new LocalPrekeys();
+    this.peerPrekeys = new PeerPrekeyBook();
     await this.transport.stop();
     this.emit();
   }
@@ -294,12 +290,14 @@ export class MeshEngine {
     if (!this.identity) throw new Error('mesh not started');
 
     const messageId = randomId();
+    const { public: agreement } = this.peerPrekeys.takeAgreementPublic(recipient);
     const sealed = seal(
       this.identity,
       recipient,
-      this.packBody(text, messageId),
-      this.agreementPublicFor(recipient),
+      this.packBody(text, messageId, this.prekeysFor(recipient.publicId)),
+      agreement,
     );
+    this.onPrekeysChanged?.();
 
     await this.recordOutgoing(messageId, recipient.publicId, text, [recipient.publicId]);
     // 'sent' is written BEFORE injecting, and that ordering is load-bearing: the
@@ -352,7 +350,6 @@ export class MeshEngine {
     // ack only its own copy, but it buys nothing: two colluding members can
     // already recognise that they hold the same message from its identical
     // plaintext and sentAt, so the shared id leaks nothing they did not have.
-    const body = this.packBody(text, messageId);
     await this.recordOutgoing(
       messageId,
       `~${groupId}`,
@@ -365,17 +362,27 @@ export class MeshEngine {
     // counting envelopes leaving one device learns "that phone is in a group of
     // N" without decrypting anything. Spreading the injection over a few
     // seconds costs nothing and removes the pattern.
+    // Each copy gets its own seal target and prekey replenishment for that member.
     await Promise.all(
       members.map(async (member) => {
-        const sealed = seal(this.identity!, member, body, this.agreementPublicFor(member));
+        const memberBody = this.packBody(text, messageId, this.prekeysFor(member.publicId));
+        const { public: agreement } = this.peerPrekeys.takeAgreementPublic(member);
+        const sealed = seal(this.identity!, member, memberBody, agreement);
         await this.inject(sealed, jitterMs());
       }),
     );
+    this.onPrekeysChanged?.();
 
     return messageId;
   }
 
   // ---- shared plumbing ----------------------------------------------------
+
+  private prekeysFor(peerPublicId: string): PrekeyUpdateWire | undefined {
+    if (!this.identity) return undefined;
+    const bundle = this.localPrekeys.updateForPeer(this.identity, peerPublicId);
+    return this.localPrekeys.toWire(bundle);
+  }
 
   /**
    * Builds a padded, sealed-payload-ready body.
@@ -402,11 +409,14 @@ export class MeshEngine {
    *     de-anonymises the audience of a megaphone: broadcast is the one mode
    *     where the listener is currently invisible to the speaker, and receipts
    *     would turn every listener into a signed, identified reply.
+   *
+   * `prekeys` is attached only on peer-addressed traffic (direct/group/ack) so
+   * the far side can replenish one-time seal targets without re-meeting.
    */
-  private packBody(text: string, messageId?: string): Uint8Array {
+  private packBody(text: string, messageId?: string, prekeys?: PrekeyUpdateWire): Uint8Array {
     const body: MessageBody = messageId
-      ? { kind: 'text', text, sentAt: Date.now(), id: messageId }
-      : { kind: 'text', text, sentAt: Date.now() };
+      ? { kind: 'text', text, sentAt: Date.now(), id: messageId, ...(prekeys ? { prekeys } : {}) }
+      : { kind: 'text', text, sentAt: Date.now(), ...(prekeys ? { prekeys } : {}) };
     return pad(toUtf8(encodeBody(body)));
   }
 
@@ -522,6 +532,13 @@ export class MeshEngine {
     // learn which mode a message is in.
     const hit = this.tryOpen(envelope.payload);
     if (hit) {
+      // Per-message FS: if this opened under an OTK, wipe that secret now.
+      if (hit.opened.agreementPublic) {
+        if (this.localPrekeys.consumeOtk(hit.opened.agreementPublic)) {
+          this.onPrekeysChanged?.();
+        }
+      }
+
       const unpadded = unpad(hit.opened.body);
       const parsed = unpadded ? decodeBody(fromUtf8(unpadded)) : null;
 
@@ -555,6 +572,12 @@ export class MeshEngine {
           });
           this.onMessage?.(hit.conversationId ?? sender, sender, parsed.text, parsed.sentAt);
 
+          // Absorb sender prekeys only on direct/group (identity open), never on
+          // channel hits — channel authors are not a 1:1 seal relationship.
+          if (hit.conversationId === null && parsed.prekeys) {
+            this.peerPrekeys.absorbWire(hit.opened.sender, parsed.prekeys);
+          }
+
           // Ack only what asked to be acked, and only in the one-to-one mode.
           // `conversationId === null` means this opened under our own identity —
           // a direct message, or one copy of a group fan-out, which is the same
@@ -575,6 +598,9 @@ export class MeshEngine {
         // arriving through a channel is a member trying to acknowledge on a
         // path we did not offer; the ledger would refuse it anyway, and there
         // is no reason to run it.
+        if (parsed.prekeys) {
+          this.peerPrekeys.absorbWire(hit.opened.sender, parsed.prekeys);
+        }
         await this.applyReceipt(hit.opened.sender.publicId, parsed.messageId);
       }
 
@@ -613,8 +639,20 @@ export class MeshEngine {
    */
   private async sendReceipt(to: PublicIdentity, messageId: string): Promise<void> {
     if (!this.identity) return;
-    const body = pad(toUtf8(encodeBody({ kind: 'receipt', messageId, receivedAt: Date.now() })));
-    await this.inject(seal(this.identity, to, body, this.agreementPublicFor(to)));
+    const prekeys = this.prekeysFor(to.publicId);
+    const body = pad(
+      toUtf8(
+        encodeBody({
+          kind: 'receipt',
+          messageId,
+          receivedAt: Date.now(),
+          ...(prekeys ? { prekeys } : {}),
+        }),
+      ),
+    );
+    const { public: agreement } = this.peerPrekeys.takeAgreementPublic(to);
+    await this.inject(seal(this.identity, to, body, agreement));
+    this.onPrekeysChanged?.();
   }
 
   /**
@@ -646,7 +684,7 @@ export class MeshEngine {
     payload: Uint8Array,
   ): { opened: OpenedMessage; conversationId: string | null } | null {
     if (this.identity) {
-      const direct = open(this.identity, payload, this.receiveKeys.secrets());
+      const direct = open(this.identity, payload, this.localPrekeys.secretsForOpen());
       if (direct) return { opened: direct, conversationId: null };
     }
 

@@ -168,6 +168,15 @@ export function unpad(padded: Uint8Array): Uint8Array | null {
 // Application-level message body (lives inside the sealed payload)
 // ---------------------------------------------------------------------------
 
+/**
+ * In-band prekey replenishment. Travels inside the sealed body so relays learn
+ * nothing; the recipient verifies the SPK against the authenticated sender.
+ */
+export type PrekeyUpdateWire = {
+  spk: string;
+  otks: string[];
+};
+
 export type MessageBody =
   /**
    * `id` is the SENDER's local message id, carried so the recipient has
@@ -181,11 +190,24 @@ export type MessageBody =
    *     the structural way of saying "do not ack this";
    *   - a peer running an older build omits it always, and must still be
    *     readable rather than rejected.
+   *
+   * `prekeys` replenishes the recipient's seal targets for *this* sender
+   * (per-message FS). Omitted on channel/public traffic.
    */
-  | { kind: 'text'; text: string; sentAt: number; id?: string }
-  | { kind: 'receipt'; messageId: string; receivedAt: number };
+  | { kind: 'text'; text: string; sentAt: number; id?: string; prekeys?: PrekeyUpdateWire }
+  | { kind: 'receipt'; messageId: string; receivedAt: number; prekeys?: PrekeyUpdateWire };
 
 export const encodeBody = (b: MessageBody): string => JSON.stringify(b);
+
+function parsePrekeys(raw: unknown): PrekeyUpdateWire | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const spk = (raw as { spk?: unknown }).spk;
+  const otks = (raw as { otks?: unknown }).otks;
+  if (typeof spk !== 'string' || !Array.isArray(otks)) return undefined;
+  if (!otks.every((x) => typeof x === 'string')) return undefined;
+  return { spk, otks };
+}
 
 /**
  * Strict on the fields a variant is defined to have, tolerant of the one field
@@ -208,9 +230,14 @@ export function decodeBody(json: string): MessageBody | null {
     ) {
       // A present-but-wrong-typed id is a malformed body, not an old peer.
       if (parsed.id !== undefined && typeof parsed.id !== 'string') return null;
-      return typeof parsed.id === 'string'
-        ? { kind: 'text', text: parsed.text, sentAt: parsed.sentAt, id: parsed.id }
-        : { kind: 'text', text: parsed.text, sentAt: parsed.sentAt };
+      const prekeys = parsePrekeys(parsed.prekeys);
+      // If prekeys was present but malformed, reject the body — do not strip.
+      if (parsed.prekeys !== undefined && !prekeys) return null;
+      const base = { kind: 'text' as const, text: parsed.text, sentAt: parsed.sentAt };
+      if (typeof parsed.id === 'string' && prekeys) return { ...base, id: parsed.id, prekeys };
+      if (typeof parsed.id === 'string') return { ...base, id: parsed.id };
+      if (prekeys) return { ...base, prekeys };
+      return base;
     }
 
     if (
@@ -218,7 +245,11 @@ export function decodeBody(json: string): MessageBody | null {
       typeof parsed.messageId === 'string' &&
       typeof parsed.receivedAt === 'number'
     ) {
-      return { kind: 'receipt', messageId: parsed.messageId, receivedAt: parsed.receivedAt };
+      const prekeys = parsePrekeys(parsed.prekeys);
+      if (parsed.prekeys !== undefined && !prekeys) return null;
+      return prekeys
+        ? { kind: 'receipt', messageId: parsed.messageId, receivedAt: parsed.receivedAt, prekeys }
+        : { kind: 'receipt', messageId: parsed.messageId, receivedAt: parsed.receivedAt };
     }
 
     return null;

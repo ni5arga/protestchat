@@ -22,12 +22,11 @@ import { RadioAccessGate } from '@/components/radio-access-gate';
 
 import { cleanContactName } from './contact';
 import { encodeContactCode, decodeContactCode } from './contact-code';
-import type { Identity, PublicIdentity, SignedReceiveKey } from './crypto';
+import type { Identity, PublicIdentity } from './crypto';
 import {
   PUBLIC_CHANNEL_KEY,
   PUBLIC_CHANNEL_NAME,
   RECEIVE_KEY_ROTATION_MS,
-  ReceiveKeyRing,
   destroyIdentity,
   deriveChannelKey,
   loadOrCreateIdentity,
@@ -35,11 +34,11 @@ import {
   parsePublicId,
   randomId,
   safetyNumber,
-  signReceiveKey,
 } from './crypto';
 import * as db from './db';
 import type { MeshStatus } from './mesh';
 import { mesh, shortName } from './mesh';
+import { LocalPrekeys, PeerPrekeyBook } from './prekeys';
 
 const NAME_KEY = 'protestchat.displayName.v1';
 
@@ -50,7 +49,7 @@ type AppContextValue = {
   setDisplayName: (name: string) => Promise<void>;
 
   /**
-   * Current contact code for the QR plaque (v2 when a receive key is ready).
+   * Current contact code for the QR plaque (v2 with prekey bundle when ready).
    * Empty until boot finishes.
    */
   contactCode: string;
@@ -109,40 +108,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [contactCode, setContactCode] = useState('');
 
   const identityRef = useRef<Identity | null>(null);
-  const receiveRingRef = useRef(new ReceiveKeyRing());
+  const localPrekeysRef = useRef(new LocalPrekeys());
+  const peerPrekeysRef = useRef(new PeerPrekeyBook());
 
-  const persistAndPublishReceiveKeys = useCallback(async (id: Identity) => {
-    const ring = receiveRingRef.current;
-    ring.sweep();
-    ring.ensureFresh();
-    await db.replaceReceiveKeys(ring.snapshot());
-    mesh.setReceiveKeyRing(ring);
-
-    const current = ring.current();
-    let signed: SignedReceiveKey | null = null;
-    if (current) signed = signReceiveKey(id, current);
-    setContactCode(encodeContactCode(id.publicId, signed));
+  const persistPrekeys = useCallback(async (id: Identity) => {
+    const local = localPrekeysRef.current;
+    local.ensureReady();
+    const snap = local.snapshot();
+    await db.saveLocalPrekeys(snap.spk, snap.otks);
+    await db.savePeerPrekeys(peerPrekeysRef.current.snapshot());
+    mesh.setLocalPrekeys(local);
+    mesh.setPeerPrekeys(peerPrekeysRef.current);
+    const bundle = local.bundleForQr(id);
+    setContactCode(encodeContactCode(id.publicId, bundle));
+    // bundleForQr issues OTKs — persist again so issued_to sticks.
+    const after = local.snapshot();
+    await db.saveLocalPrekeys(after.spk, after.otks);
   }, []);
 
   const refresh = useCallback(async () => {
-    const [convos, cts, chs, grps, peerKeys] = await Promise.all([
+    const [convos, cts, chs, grps] = await Promise.all([
       db.listConversations(),
       db.listContacts(),
       db.listChannels(),
       db.listGroups(),
-      db.listContactReceiveKeys(),
     ]);
     setConversations(convos);
     setContacts(cts);
     setChannels(chs);
     setGroups(grps);
 
-    // The engine trial-decrypts against whatever we hand it here, so this must
-    // run after any join or leave or those messages become unreadable.
     mesh.setChannelKeys(chs.map((c) => ({ id: c.id, key: c.key })));
-    mesh.setPeerReceivePublics(
-      peerKeys.map((k) => ({ publicId: k.publicId, receivePublic: k.receivePublic })),
-    );
   }, []);
 
   // ---- boot -------------------------------------------------------------
@@ -153,9 +149,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await db.getDb();
       await db.sweepExpired();
 
-      // Public broadcast always exists and cannot be left. Its key is a
-      // hardcoded constant every install shares — it provides no
-      // confidentiality and the UI must say so loudly.
       await db.upsertChannel(PUBLIC_CHANNEL_NAME, PUBLIC_CHANNEL_NAME, 'public', PUBLIC_CHANNEL_KEY);
 
       const id = await loadOrCreateIdentity();
@@ -163,16 +156,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const name = storedName ?? shortName(id.publicId);
       if (!storedName) await SecureStore.setItemAsync(NAME_KEY, name);
 
-      const storedKeys = await db.listReceiveKeys();
-      receiveRingRef.current.load(storedKeys);
+      const stored = await db.loadLocalPrekeys();
+      localPrekeysRef.current.load(stored.spk, stored.otks);
+      peerPrekeysRef.current.load(await db.loadPeerPrekeys());
 
       if (cancelled) return;
       identityRef.current = id;
       setIdentity(id);
       setName(name);
-      await persistAndPublishReceiveKeys(id);
+
+      mesh.onPrekeysChanged = () => {
+        const cur = identityRef.current;
+        if (cur) void persistPrekeys(cur);
+      };
+
+      await persistPrekeys(id);
       await refresh();
       setReady(true);
+      // NB: the mesh is NOT started here. The RadioAccessGate (#23) owns that —
+      // it calls startRadio() only once Bluetooth permission and power are
+      // ready, so the radio never comes up behind a denied/off gate.
     })();
 
     const unsub = mesh.subscribe(setStatus);
@@ -182,15 +185,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       unsub();
       mesh.onMessage = null;
+      mesh.onPrekeysChanged = null;
     };
-  }, [refresh, persistAndPublishReceiveKeys]);
+  }, [refresh, persistPrekeys]);
 
-  // ---- expire + rotate receive keys on foreground and on a timer --------
+  // ---- expire + rotate on foreground and on a timer ---------------------
   useEffect(() => {
     const syncKeys = () => {
       const id = identityRef.current;
       if (!id) return;
-      void db.sweepExpired().then(() => persistAndPublishReceiveKeys(id)).then(refresh);
+      void db
+        .sweepExpired()
+        .then(() => persistPrekeys(id))
+        .then(refresh);
     };
 
     const sub = AppState.addEventListener('change', (next) => {
@@ -201,7 +208,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sub.remove();
       clearInterval(timer);
     };
-  }, [refresh, persistAndPublishReceiveKeys]);
+  }, [refresh, persistPrekeys]);
 
   // ---- actions ----------------------------------------------------------
 
@@ -243,13 +250,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [refresh, channels, groups],
   );
 
-  /**
-   * Joins a channel, deriving its key from the name and passphrase.
-   *
-   * Deliberately slow (~200ms on a phone) — see SCRYPT_PARAMS. The key is
-   * cached in SQLite afterwards, so this cost is paid once per channel, never
-   * per message.
-   */
   const joinChannel = useCallback(
     async (name: string, passphrase: string) => {
       const id = normaliseChannelName(name);
@@ -294,17 +294,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const parsed = decodeContactCode(codeOrPublicId);
       if (!parsed) return false;
       const chosen = name ? cleanContactName(name) : null;
-      await db.upsertContact(parsed.identity.publicId, chosen || shortName(parsed.identity.publicId));
+      await db.upsertContact(
+        parsed.identity.publicId,
+        chosen || shortName(parsed.identity.publicId),
+      );
       // upsertContact deliberately will not overwrite an existing name, so a
       // deliberate rename needs the explicit path.
       if (chosen) await db.setContactName(parsed.identity.publicId, chosen);
-      if (parsed.receiveKey) {
-        await db.setContactReceiveKey(
-          parsed.identity.publicId,
-          parsed.receiveKey.public,
-          parsed.receiveKey.createdAt,
-        );
-        mesh.setPeerReceivePublic(parsed.identity.publicId, parsed.receiveKey.public);
+      if (parsed.bundle) {
+        peerPrekeysRef.current.absorb(parsed.identity, parsed.bundle);
+        mesh.setPeerPrekeys(peerPrekeysRef.current);
+        await db.savePeerPrekeys(peerPrekeysRef.current.snapshot());
       }
       await refresh();
       return true;
@@ -348,8 +348,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await destroyIdentity();
     await SecureStore.deleteItemAsync(NAME_KEY);
 
-    // Come back up as a brand new person. Leaving the app in a dead state
-    // would itself be a signal that something was wiped.
     await db.upsertChannel(PUBLIC_CHANNEL_NAME, PUBLIC_CHANNEL_NAME, 'public', PUBLIC_CHANNEL_KEY);
     const fresh = await loadOrCreateIdentity();
     const freshName = shortName(fresh.publicId);
@@ -357,12 +355,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     identityRef.current = fresh;
     setIdentity(fresh);
     setName(freshName);
-    receiveRingRef.current = new ReceiveKeyRing();
-    mesh.setPeerReceivePublics([]);
-    await persistAndPublishReceiveKeys(fresh);
+    localPrekeysRef.current = new LocalPrekeys();
+    peerPrekeysRef.current = new PeerPrekeyBook();
+    mesh.setPeerPrekeys(peerPrekeysRef.current);
+    await persistPrekeys(fresh);
     await refresh();
     await mesh.start(fresh, freshName).catch(() => {});
-  }, [refresh, persistAndPublishReceiveKeys]);
+  }, [refresh, persistPrekeys]);
 
   const value = useMemo<AppContextValue>(
     () => ({
