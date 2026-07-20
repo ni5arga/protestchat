@@ -254,6 +254,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (name: string, passphrase: string) => {
       const id = normaliseChannelName(name);
       if (!id) throw new Error('Give the channel a name.');
+      // "public" is the everyone-nearby broadcast, always present with a fixed
+      // key. Letting it be joined as a passphrase channel would collide on the
+      // same row and silently rekey the broadcast, breaking it for everyone who
+      // followed the same word-of-mouth instruction.
+      if (id === PUBLIC_CHANNEL_NAME) {
+        throw new Error(
+          '“public” is the everyone-nearby broadcast — it is always on and open to anyone. Pick a different name for a private channel.',
+        );
+      }
       if (!passphrase) throw new Error('A channel needs a passphrase.');
 
       const key = deriveChannelKey(id, passphrase);

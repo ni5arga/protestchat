@@ -484,8 +484,13 @@ export async function upsertChannel(
 ): Promise<void> {
   const d = await getDb();
   await d.runAsync(
+    // Defence in depth behind the joinChannel guard: a public row is a fixed
+    // broadcast key and must never be rekeyed by a colliding passphrase channel.
+    // The WHERE on the existing row's kind makes the public row immutable here,
+    // so even a future caller cannot silently break the everyone-nearby channel.
     `INSERT INTO channels (id, name, kind, key, joined_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET name = excluded.name, key = excluded.key`,
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, key = excluded.key
+       WHERE channels.kind != 'public'`,
     [id, name, kind, toBase64(key), Date.now()],
   );
 }
