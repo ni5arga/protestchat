@@ -53,7 +53,7 @@ function LocalizedLayout() {
               thing on the screen rather than the second. */}
           <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="chat/[id]" options={{ title: '' }} />
-          <Stack.Screen name="contact/[id]" options={{ title: 'Edit person' }} />
+          <Stack.Screen name="contact/[id]" options={{ title: copy('contact.editTitle') }} />
           <Stack.Screen
             name="add"
             options={{ title: copy('nav.addPerson'), presentation: 'modal', animation: 'slide_from_bottom' }}
