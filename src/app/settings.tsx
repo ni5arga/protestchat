@@ -35,13 +35,28 @@ export default function SettingsScreen() {
   const { displayName, setDisplayName, status, startRadio, stopRadio, panicWipe } = useApp();
   const [name, setName] = useState(displayName);
 
+  const runWipe = async () => {
+    try {
+      await panicWipe();
+    } catch (err) {
+      // A wipe that did not fully complete must never pass silently — the user
+      // may be about to hand this phone over believing it is clean.
+      Alert.alert(
+        'Wipe may be incomplete',
+        `${
+          err instanceof Error ? err.message : 'Something went wrong while erasing this phone.'
+        }\n\nTry again, and if it keeps failing, turn the phone off.`,
+      );
+    }
+  };
+
   const confirmWipe = () =>
     Alert.alert(
       'Delete everything?',
       'Every message, every contact and your identity are erased from this phone. This cannot be undone, and the people you talked to will not be notified.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete everything', style: 'destructive', onPress: () => void panicWipe() },
+        { text: 'Delete everything', style: 'destructive', onPress: () => void runWipe() },
       ],
     );
 

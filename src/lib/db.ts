@@ -719,20 +719,29 @@ export const meshStore: MeshStore = {
  */
 export async function wipeEverything(): Promise<void> {
   const d = await getDb();
-  await d.execAsync(`
-    DELETE FROM messages;
-    DELETE FROM message_recipients;
-    DELETE FROM envelopes;
-    DELETE FROM seen;
-    DELETE FROM seen_messages;
-    DELETE FROM contacts;
-    DELETE FROM group_members;
-    DELETE FROM groups;
-    DELETE FROM channels;
-    DELETE FROM conversation_reads;
-    DELETE FROM receive_keys;
-    DELETE FROM one_time_keys;
-    DELETE FROM peer_prekeys;
-    VACUUM;
-  `);
+  // Atomic, so the outcome is only ever "every table cleared" or "nothing
+  // cleared" — never a silent half-wipe where, say, messages are gone but
+  // contacts remain. If the transaction throws it rolls back and the caller
+  // (panicWipe) surfaces the failure rather than reporting a clean device.
+  await d.withExclusiveTransactionAsync(async (tx) => {
+    await tx.execAsync(`
+      DELETE FROM messages;
+      DELETE FROM message_recipients;
+      DELETE FROM envelopes;
+      DELETE FROM seen;
+      DELETE FROM seen_messages;
+      DELETE FROM contacts;
+      DELETE FROM group_members;
+      DELETE FROM groups;
+      DELETE FROM channels;
+      DELETE FROM conversation_reads;
+      DELETE FROM receive_keys;
+      DELETE FROM one_time_keys;
+      DELETE FROM peer_prekeys;
+    `);
+  });
+  // VACUUM reclaims the freed pages so deleted plaintext is not left lying in
+  // slack space. It cannot run inside a transaction, and it is best-effort:
+  // the rows are already gone, so a VACUUM failure is not a failed wipe.
+  await d.execAsync(`VACUUM;`).catch(() => {});
 }

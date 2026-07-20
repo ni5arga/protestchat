@@ -343,11 +343,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const panicWipe = useCallback(async () => {
-    await mesh.stop();
-    await db.wipeEverything();
-    await destroyIdentity();
-    await SecureStore.deleteItemAsync(NAME_KEY);
+    // This runs at the worst possible moment on a possibly-degraded device, so
+    // no single step may be allowed to block the others, and a wipe that did
+    // not fully complete must never look like one that did.
+    //
+    // Order is by blast radius: the identity seed decrypts all recorded past
+    // direct traffic, so it goes first and unconditionally — before the radio,
+    // which can hang, and before the database, which can partially fail. Each
+    // destructive step is independent and best-effort; failures are collected
+    // and surfaced rather than swallowed as an unhandled rejection.
+    const failures: string[] = [];
+    const wipeStep = async (label: string, fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+      } catch (err) {
+        failures.push(`${label} (${err instanceof Error ? err.message : String(err)})`);
+      }
+    };
 
+    await wipeStep('identity seed', () => destroyIdentity());
+    await wipeStep('display name', () => SecureStore.deleteItemAsync(NAME_KEY));
+    await wipeStep('messages and keys', () => db.wipeEverything());
+    // A live radio keeps re-deriving state from the identity we just destroyed,
+    // so quiet it — but only after the durable secrets are gone, since stop()
+    // is the step most likely to hang on a wedged BLE stack.
+    await wipeStep('radio', () => mesh.stop());
+
+    // Drop in-memory secrets regardless of what threw above.
+    identityRef.current = null;
+    setIdentity(null);
+    localPrekeysRef.current = new LocalPrekeys();
+    peerPrekeysRef.current = new PeerPrekeyBook();
+    mesh.setPeerPrekeys(peerPrekeysRef.current);
+
+    // Do not re-provision on top of a half-wiped device, and do not let the UI
+    // report success. Leaving the app with no identity is the honest state.
+    if (failures.length > 0) {
+      throw new Error(`This phone may not be fully wiped — ${failures.join(', ')}.`);
+    }
+
+    // The device is verifiably clean: hand the user a fresh identity so the app
+    // is usable again. A failure here is a provisioning problem, not a wipe that
+    // leaked, so it surfaces on its own.
     await db.upsertChannel(PUBLIC_CHANNEL_NAME, PUBLIC_CHANNEL_NAME, 'public', PUBLIC_CHANNEL_KEY);
     const fresh = await loadOrCreateIdentity();
     const freshName = shortName(fresh.publicId);
@@ -355,9 +392,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     identityRef.current = fresh;
     setIdentity(fresh);
     setName(freshName);
-    localPrekeysRef.current = new LocalPrekeys();
-    peerPrekeysRef.current = new PeerPrekeyBook();
-    mesh.setPeerPrekeys(peerPrekeysRef.current);
     await persistPrekeys(fresh);
     await refresh();
     await mesh.start(fresh, freshName).catch(() => {});
