@@ -30,39 +30,42 @@ import { Button, Card, Field, Input, Screen } from '@/components/ui';
 import { Radius, Spacing, TAP_TARGET, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useApp } from '@/lib/app-state';
-import {
-  CONTACT_CODE_PREFIX,
-  MAX_CONTACT_NAME_LENGTH,
-  cleanContactName,
-  publicIdFromContactCode,
-} from '@/lib/contact';
+import { MAX_CONTACT_NAME_LENGTH, cleanContactName } from '@/lib/contact';
+import { decodeContactCode } from '@/lib/contact-code';
 
 export default function AddScreen() {
   const t = useTheme();
   const router = useRouter();
   const { width } = useWindowDimensions();
-  const { identity, displayName, contacts, addContact } = useApp();
+  const { displayName, contactCode, contacts, addContact } = useApp();
 
   const [mode, setMode] = useState<'show' | 'scan'>('show');
   const [permission, requestPermission] = useCameraPermissions();
   const [typed, setTyped] = useState('');
   const [pendingPublicId, setPendingPublicId] = useState<string | null>(null);
+  const [pendingCode, setPendingCode] = useState('');
   const [contactName, setContactName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const handled = useRef(false);
 
-  const myCode = identity ? `${CONTACT_CODE_PREFIX}${identity.publicId}` : '';
+  const myCode = contactCode;
   const qrSize = Math.min(width - Spacing.lg * 2 - Spacing.xl * 2, 268);
 
   const accept = (raw: string) => {
-    const publicId = publicIdFromContactCode(raw);
-    if (!publicId) {
+    const parsed = decodeContactCode(raw);
+    if (!parsed) {
       setError('That is not a valid contact code.');
       handled.current = false;
       return;
     }
+    const publicId = parsed.identity.publicId;
     const existing = contacts.find((contact) => contact.publicId === publicId);
+    // Stash the raw code, not just the id. A v2 code carries the peer's
+    // receive-key bundle, and addContact() needs the whole string to establish
+    // forward secrecy at introduction — passing only the publicId would silently
+    // drop the prekeys and fall back to no-FS sealing.
+    setPendingCode(raw.trim());
     setPendingPublicId(publicId);
     setContactName(existing?.name ?? '');
     setError(null);
@@ -78,7 +81,7 @@ export default function AddScreen() {
     setSaving(true);
     setError(null);
     try {
-      const ok = await addContact(pendingPublicId, chosen);
+      const ok = await addContact(pendingCode, chosen);
       if (!ok) {
         setError('That contact code is no longer valid.');
         setSaving(false);

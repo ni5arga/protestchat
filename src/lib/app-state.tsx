@@ -21,10 +21,13 @@ import { AppState } from 'react-native';
 import { RadioAccessGate } from '@/components/radio-access-gate';
 
 import { cleanContactName } from './contact';
-import type { Identity, PublicIdentity } from './crypto';
+import { encodeContactCode, decodeContactCode } from './contact-code';
+import type { Identity, PublicIdentity, SignedReceiveKey } from './crypto';
 import {
   PUBLIC_CHANNEL_KEY,
   PUBLIC_CHANNEL_NAME,
+  RECEIVE_KEY_ROTATION_MS,
+  ReceiveKeyRing,
   destroyIdentity,
   deriveChannelKey,
   loadOrCreateIdentity,
@@ -32,6 +35,7 @@ import {
   parsePublicId,
   randomId,
   safetyNumber,
+  signReceiveKey,
 } from './crypto';
 import * as db from './db';
 import type { MeshStatus } from './mesh';
@@ -44,6 +48,12 @@ type AppContextValue = {
   identity: Identity | null;
   displayName: string;
   setDisplayName: (name: string) => Promise<void>;
+
+  /**
+   * Current contact code for the QR plaque (v2 when a receive key is ready).
+   * Empty until boot finishes.
+   */
+  contactCode: string;
 
   status: MeshStatus;
   conversations: db.Conversation[];
@@ -66,7 +76,8 @@ type AppContextValue = {
   leaveChannel: (id: string) => Promise<void>;
   createGroup: (name: string, memberPublicIds: string[]) => Promise<void>;
   deleteGroup: (id: string) => Promise<void>;
-  addContact: (publicId: string, name?: string) => Promise<boolean>;
+  /** Accepts a raw QR/paste string (v1 or v2 contact code) or a bare publicId. */
+  addContact: (codeOrPublicId: string, name?: string) => Promise<boolean>;
   renameContact: (publicId: string, name: string) => Promise<void>;
   verifyContact: (publicId: string, verified: boolean) => Promise<void>;
   safetyNumberFor: (publicId: string) => string | null;
@@ -95,15 +106,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [contacts, setContacts] = useState<db.Contact[]>([]);
   const [channels, setChannels] = useState<db.Channel[]>([]);
   const [groups, setGroups] = useState<db.Group[]>([]);
+  const [contactCode, setContactCode] = useState('');
 
   const identityRef = useRef<Identity | null>(null);
+  const receiveRingRef = useRef(new ReceiveKeyRing());
+
+  const persistAndPublishReceiveKeys = useCallback(async (id: Identity) => {
+    const ring = receiveRingRef.current;
+    ring.sweep();
+    ring.ensureFresh();
+    await db.replaceReceiveKeys(ring.snapshot());
+    mesh.setReceiveKeyRing(ring);
+
+    const current = ring.current();
+    let signed: SignedReceiveKey | null = null;
+    if (current) signed = signReceiveKey(id, current);
+    setContactCode(encodeContactCode(id.publicId, signed));
+  }, []);
 
   const refresh = useCallback(async () => {
-    const [convos, cts, chs, grps] = await Promise.all([
+    const [convos, cts, chs, grps, peerKeys] = await Promise.all([
       db.listConversations(),
       db.listContacts(),
       db.listChannels(),
       db.listGroups(),
+      db.listContactReceiveKeys(),
     ]);
     setConversations(convos);
     setContacts(cts);
@@ -113,6 +140,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // The engine trial-decrypts against whatever we hand it here, so this must
     // run after any join or leave or those messages become unreadable.
     mesh.setChannelKeys(chs.map((c) => ({ id: c.id, key: c.key })));
+    mesh.setPeerReceivePublics(
+      peerKeys.map((k) => ({ publicId: k.publicId, receivePublic: k.receivePublic })),
+    );
   }, []);
 
   // ---- boot -------------------------------------------------------------
@@ -133,10 +163,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const name = storedName ?? shortName(id.publicId);
       if (!storedName) await SecureStore.setItemAsync(NAME_KEY, name);
 
+      const storedKeys = await db.listReceiveKeys();
+      receiveRingRef.current.load(storedKeys);
+
       if (cancelled) return;
       identityRef.current = id;
       setIdentity(id);
       setName(name);
+      await persistAndPublishReceiveKeys(id);
       await refresh();
       setReady(true);
     })();
@@ -149,15 +183,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsub();
       mesh.onMessage = null;
     };
-  }, [refresh]);
+  }, [refresh, persistAndPublishReceiveKeys]);
 
-  // ---- expire on every foreground ---------------------------------------
+  // ---- expire + rotate receive keys on foreground and on a timer --------
   useEffect(() => {
+    const syncKeys = () => {
+      const id = identityRef.current;
+      if (!id) return;
+      void db.sweepExpired().then(() => persistAndPublishReceiveKeys(id)).then(refresh);
+    };
+
     const sub = AppState.addEventListener('change', (next) => {
-      if (next === 'active') void db.sweepExpired().then(refresh);
+      if (next === 'active') syncKeys();
     });
-    return () => sub.remove();
-  }, [refresh]);
+    const timer = setInterval(syncKeys, Math.min(RECEIVE_KEY_ROTATION_MS, 60_000));
+    return () => {
+      sub.remove();
+      clearInterval(timer);
+    };
+  }, [refresh, persistAndPublishReceiveKeys]);
 
   // ---- actions ----------------------------------------------------------
 
@@ -246,14 +290,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const addContact = useCallback(
-    async (publicId: string, name?: string) => {
-      const parsed = parsePublicId(publicId.trim());
+    async (codeOrPublicId: string, name?: string) => {
+      const parsed = decodeContactCode(codeOrPublicId);
       if (!parsed) return false;
       const chosen = name ? cleanContactName(name) : null;
-      await db.upsertContact(parsed.publicId, chosen || shortName(parsed.publicId));
+      await db.upsertContact(parsed.identity.publicId, chosen || shortName(parsed.identity.publicId));
       // upsertContact deliberately will not overwrite an existing name, so a
       // deliberate rename needs the explicit path.
-      if (chosen) await db.setContactName(parsed.publicId, chosen);
+      if (chosen) await db.setContactName(parsed.identity.publicId, chosen);
+      if (parsed.receiveKey) {
+        await db.setContactReceiveKey(
+          parsed.identity.publicId,
+          parsed.receiveKey.public,
+          parsed.receiveKey.createdAt,
+        );
+        mesh.setPeerReceivePublic(parsed.identity.publicId, parsed.receiveKey.public);
+      }
       await refresh();
       return true;
     },
@@ -305,9 +357,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     identityRef.current = fresh;
     setIdentity(fresh);
     setName(freshName);
+    receiveRingRef.current = new ReceiveKeyRing();
+    mesh.setPeerReceivePublics([]);
+    await persistAndPublishReceiveKeys(fresh);
     await refresh();
     await mesh.start(fresh, freshName).catch(() => {});
-  }, [refresh]);
+  }, [refresh, persistAndPublishReceiveKeys]);
 
   const value = useMemo<AppContextValue>(
     () => ({
@@ -315,6 +370,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       identity,
       displayName,
       setDisplayName,
+      contactCode,
       status,
       conversations,
       contacts,
@@ -339,6 +395,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       identity,
       displayName,
       setDisplayName,
+      contactCode,
       status,
       conversations,
       contacts,

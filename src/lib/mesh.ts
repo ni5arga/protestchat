@@ -23,7 +23,14 @@ import { concat, fromBase64, fromUtf8, toBase64, toUtf8 } from './bytes';
 // through start() — and importing the core directly is what lets this file be
 // loaded and tested off-device.
 import type { Identity, OpenedMessage, PublicIdentity } from './crypto-core';
-import { open, openWithKey, randomId, seal, sealToKey } from './crypto-core';
+import {
+  ReceiveKeyRing,
+  open,
+  openWithKey,
+  randomId,
+  seal,
+  sealToKey,
+} from './crypto-core';
 import type { Envelope, MessageBody } from './protocol';
 import {
   DEFAULTS,
@@ -78,6 +85,18 @@ export class MeshEngine {
   private channelKeys: { id: string; key: Uint8Array }[] = [];
 
   /**
+   * Our short-lived receive-key secrets for forward-secret inbound seals.
+   * Empty ring falls back to the long-term identity key (v1 behaviour).
+   */
+  private receiveKeys = new ReceiveKeyRing();
+
+  /**
+   * Peer publicId → their current receive-key public (verified at intro).
+   * When missing, outbound seals use their long-term xPublic (no FS).
+   */
+  private peerReceivePublics = new Map<string, Uint8Array>();
+
+  /**
    * Fired when a message we can read is opened.
    * `conversationId` is a publicId, "#channelId", or "~groupId".
    */
@@ -88,6 +107,27 @@ export class MeshEngine {
   /** Replaces the set of channel keys used for trial decryption. */
   setChannelKeys(keys: { id: string; key: Uint8Array }[]): void {
     this.channelKeys = keys;
+  }
+
+  /** Replace our receive-key ring (boot / after rotation persist). */
+  setReceiveKeyRing(ring: ReceiveKeyRing): void {
+    this.receiveKeys = ring;
+  }
+
+  /** Publish/replace the sealed-to public we know for a peer. */
+  setPeerReceivePublic(publicId: string, receivePublic: Uint8Array | null): void {
+    if (!receivePublic) this.peerReceivePublics.delete(publicId);
+    else this.peerReceivePublics.set(publicId, receivePublic);
+  }
+
+  /** Bulk-load peer receive publics after boot. */
+  setPeerReceivePublics(entries: { publicId: string; receivePublic: Uint8Array }[]): void {
+    this.peerReceivePublics.clear();
+    for (const e of entries) this.peerReceivePublics.set(e.publicId, e.receivePublic);
+  }
+
+  private agreementPublicFor(recipient: PublicIdentity): Uint8Array {
+    return this.peerReceivePublics.get(recipient.publicId) ?? recipient.xPublic;
   }
 
   /**
@@ -254,7 +294,12 @@ export class MeshEngine {
     if (!this.identity) throw new Error('mesh not started');
 
     const messageId = randomId();
-    const sealed = seal(this.identity, recipient, this.packBody(text, messageId));
+    const sealed = seal(
+      this.identity,
+      recipient,
+      this.packBody(text, messageId),
+      this.agreementPublicFor(recipient),
+    );
 
     await this.recordOutgoing(messageId, recipient.publicId, text, [recipient.publicId]);
     // 'sent' is written BEFORE injecting, and that ordering is load-bearing: the
@@ -322,7 +367,7 @@ export class MeshEngine {
     // seconds costs nothing and removes the pattern.
     await Promise.all(
       members.map(async (member) => {
-        const sealed = seal(this.identity!, member, body);
+        const sealed = seal(this.identity!, member, body, this.agreementPublicFor(member));
         await this.inject(sealed, jitterMs());
       }),
     );
@@ -569,7 +614,7 @@ export class MeshEngine {
   private async sendReceipt(to: PublicIdentity, messageId: string): Promise<void> {
     if (!this.identity) return;
     const body = pad(toUtf8(encodeBody({ kind: 'receipt', messageId, receivedAt: Date.now() })));
-    await this.inject(seal(this.identity, to, body));
+    await this.inject(seal(this.identity, to, body, this.agreementPublicFor(to)));
   }
 
   /**
@@ -601,7 +646,7 @@ export class MeshEngine {
     payload: Uint8Array,
   ): { opened: OpenedMessage; conversationId: string | null } | null {
     if (this.identity) {
-      const direct = open(this.identity, payload);
+      const direct = open(this.identity, payload, this.receiveKeys.secrets());
       if (direct) return { opened: direct, conversationId: null };
     }
 

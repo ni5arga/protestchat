@@ -9,6 +9,8 @@
 import * as SQLite from 'expo-sqlite';
 
 import { fromBase64, toBase64 } from './bytes';
+import type { ReceiveKey } from './crypto-core';
+import { RECEIVE_KEY_RETENTION_MS } from './crypto-core';
 import type { Envelope } from './protocol';
 import { decodeEnvelope, encodeEnvelope } from './protocol';
 import type { MeshStore, Message, MessageState } from './store';
@@ -162,6 +164,23 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
     CREATE TABLE IF NOT EXISTS conversation_reads (
       peer_id    TEXT PRIMARY KEY NOT NULL,
       read_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- Our short-lived receive-key secrets. Deleting a row after retention is
+    -- what creates forward secrecy for messages sealed to that key.
+    CREATE TABLE IF NOT EXISTS receive_keys (
+      public_b64  TEXT PRIMARY KEY NOT NULL,
+      secret_b64  TEXT NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS receive_keys_by_time ON receive_keys (created_at);
+
+    -- Peers' verified receive-key publics (from QR v2). Used as the seal target
+    -- instead of their long-term xPublic when present.
+    CREATE TABLE IF NOT EXISTS contact_receive_keys (
+      public_id         TEXT PRIMARY KEY NOT NULL,
+      receive_public_b64 TEXT NOT NULL,
+      created_at        INTEGER NOT NULL
     );
   `);
 
@@ -561,6 +580,72 @@ export async function sweepExpired(): Promise<void> {
     [now - MESSAGE_RETENTION_MS],
   );
   await d.runAsync(`DELETE FROM messages WHERE first_seen <= ?`, [now - MESSAGE_RETENTION_MS]);
+
+  // Wiping retired receive-key secrets is the FS control — not housekeeping.
+  await d.runAsync(`DELETE FROM receive_keys WHERE created_at <= ?`, [
+    now - RECEIVE_KEY_RETENTION_MS,
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Receive keys (forward secrecy)
+// ---------------------------------------------------------------------------
+
+export async function listReceiveKeys(): Promise<ReceiveKey[]> {
+  const d = await getDb();
+  const rows = await d.getAllAsync<{
+    public_b64: string;
+    secret_b64: string;
+    created_at: number;
+  }>(`SELECT public_b64, secret_b64, created_at FROM receive_keys ORDER BY created_at DESC`);
+  return rows.map((r) => ({
+    public: fromBase64(r.public_b64),
+    secret: fromBase64(r.secret_b64),
+    createdAt: r.created_at,
+  }));
+}
+
+export async function replaceReceiveKeys(keys: ReceiveKey[]): Promise<void> {
+  const d = await getDb();
+  await d.execAsync('DELETE FROM receive_keys');
+  for (const k of keys) {
+    await d.runAsync(
+      `INSERT INTO receive_keys (public_b64, secret_b64, created_at) VALUES (?, ?, ?)`,
+      [toBase64(k.public), toBase64(k.secret), k.createdAt],
+    );
+  }
+}
+
+export async function setContactReceiveKey(
+  publicId: string,
+  receivePublic: Uint8Array,
+  createdAt: number,
+): Promise<void> {
+  const d = await getDb();
+  await d.runAsync(
+    `INSERT INTO contact_receive_keys (public_id, receive_public_b64, created_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(public_id) DO UPDATE SET
+       receive_public_b64 = excluded.receive_public_b64,
+       created_at = excluded.created_at`,
+    [publicId, toBase64(receivePublic), createdAt],
+  );
+}
+
+export async function listContactReceiveKeys(): Promise<
+  { publicId: string; receivePublic: Uint8Array; createdAt: number }[]
+> {
+  const d = await getDb();
+  const rows = await d.getAllAsync<{
+    public_id: string;
+    receive_public_b64: string;
+    created_at: number;
+  }>(`SELECT public_id, receive_public_b64, created_at FROM contact_receive_keys`);
+  return rows.map((r) => ({
+    publicId: r.public_id,
+    receivePublic: fromBase64(r.receive_public_b64),
+    createdAt: r.created_at,
+  }));
 }
 
 /**
@@ -603,6 +688,8 @@ export async function wipeEverything(): Promise<void> {
     DELETE FROM groups;
     DELETE FROM channels;
     DELETE FROM conversation_reads;
+    DELETE FROM receive_keys;
+    DELETE FROM contact_receive_keys;
     VACUUM;
   `);
 }
