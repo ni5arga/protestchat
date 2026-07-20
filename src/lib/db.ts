@@ -66,6 +66,13 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
       public_id  TEXT PRIMARY KEY NOT NULL,
       name       TEXT NOT NULL,
       verified   INTEGER NOT NULL DEFAULT 0,
+      -- 1 only if the user deliberately added this person (scanned or pasted
+      -- their code). 0 means auto-filed from received traffic — a channel
+      -- author, or a stranger who direct-messaged us. This is the difference
+      -- between a relationship and a mere sighting, and it gates whether we
+      -- emit a delivery receipt: acking an unaffiliated sender is a signed,
+      -- timestamped liveness proof handed to someone we never chose to talk to.
+      added      INTEGER NOT NULL DEFAULT 0,
       first_seen INTEGER NOT NULL,
       last_seen  INTEGER NOT NULL
     );
@@ -193,8 +200,26 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
   `);
 
   await migrateMessagesFirstSeen(db);
+  await migrateContactsAdded(db);
 
   return db;
+}
+
+/**
+ * Adds the `added` column to `contacts` on installs that pre-date it.
+ *
+ * Existing rows are indistinguishable at the row level between "user added" and
+ * "auto-filed", so we backfill from the two deliberate signals we do have: a
+ * contact the user verified, or one the user renamed away from the generated
+ * `anon-xxxxxx` label. Everything else defaults to 0 (a sighting), which is the
+ * safe direction — it withholds receipts from senders we cannot prove the user
+ * chose, rather than granting them by assumption.
+ */
+async function migrateContactsAdded(db: SQLite.SQLiteDatabase): Promise<void> {
+  const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(contacts)`);
+  if (cols.some((c) => c.name === 'added')) return;
+  await db.execAsync(`ALTER TABLE contacts ADD COLUMN added INTEGER NOT NULL DEFAULT 0`);
+  await db.runAsync(`UPDATE contacts SET added = 1 WHERE verified = 1 OR name NOT LIKE 'anon-%'`);
 }
 
 /**
@@ -230,6 +255,37 @@ export async function upsertContact(publicId: string, name: string): Promise<voi
      ON CONFLICT(public_id) DO UPDATE SET last_seen = excluded.last_seen`,
     [publicId, name, now, now],
   );
+}
+
+/**
+ * Marks a contact as one the user deliberately added, for the add-a-person
+ * flow. Creates the row if the person had only been auto-filed until now, so a
+ * "you message me, then I add you" order still ends up added. Only this and the
+ * add flow ever set added = 1; the mesh engine's auto-file never does.
+ */
+export async function markContactAdded(publicId: string): Promise<void> {
+  const d = await getDb();
+  const now = Date.now();
+  // Placeholder label only matters if this ever creates the row before the add
+  // flow set a name; kept in sync with mesh.ts shortName() without importing it,
+  // to avoid a db<->mesh cycle.
+  const placeholder = `anon-${publicId.slice(0, 6)}`;
+  await d.runAsync(
+    `INSERT INTO contacts (public_id, name, verified, added, first_seen, last_seen)
+     VALUES (?, ?, 0, 1, ?, ?)
+     ON CONFLICT(public_id) DO UPDATE SET added = 1, last_seen = excluded.last_seen`,
+    [publicId, placeholder, now, now],
+  );
+}
+
+/** True only for a contact the user deliberately added — see the added column. */
+export async function isAddedContact(publicId: string): Promise<boolean> {
+  const d = await getDb();
+  const r = await d.getFirstAsync<any>(
+    `SELECT 1 FROM contacts WHERE public_id = ? AND added = 1`,
+    [publicId],
+  );
+  return !!r;
 }
 
 /** Explicit rename, for the paths where the user chose the name. */
@@ -708,6 +764,7 @@ export const meshStore: MeshStore = {
   insertMessage,
   setMessageState,
   upsertContact,
+  isAddedContact,
   addExpectedRecipients,
   recordReceipt,
 };

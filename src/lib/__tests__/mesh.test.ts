@@ -182,12 +182,27 @@ async function spawn(world: World, id: string): Promise<Node> {
   return { id, identity, pub: publicOf(identity), engine, store, transport, read };
 }
 
-/** Simulate in-person QR exchange of prekey bundles (both directions). */
+/**
+ * `node` deliberately adds `peer` — what scanning their contact code does. Only
+ * an added contact is acked, so a test that expects a delivery receipt to come
+ * back must establish the relationship first, exactly as the app does.
+ */
+function addPeer(node: Node, peer: Node): void {
+  node.store.markContactAdded(peer.identity.publicId);
+}
+
+/**
+ * Simulate an in-person QR exchange (both directions): swap prekey bundles and
+ * mark each other as a deliberately-added contact, since scanning a code is
+ * exactly what makes someone an added contact rather than a stranger.
+ */
 function introduce(a: Node, b: Node): void {
   const aBundle = a.engine.getLocalPrekeys().bundleForQr(a.identity);
   const bBundle = b.engine.getLocalPrekeys().bundleForQr(b.identity);
   assert.equal(a.engine.absorbPeerBundle(b.pub, bBundle), true);
   assert.equal(b.engine.absorbPeerBundle(a.pub, aBundle), true);
+  addPeer(a, b);
+  addPeer(b, a);
 }
 
 /**
@@ -300,6 +315,7 @@ describe('relaying', () => {
 
   it('does not let the relay read what it relays', () =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      addPeer(C, A); // C added A, so C's delivery receipt travels back through B.
       world.connect('A', 'B');
       world.connect('B', 'C');
       await world.settle();
@@ -327,6 +343,7 @@ describe('relaying', () => {
 describe('dedup', () => {
   it('processes an envelope once when it arrives from two directions', () =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      addPeer(C, A); // so C acks, and the receipt is the second envelope below.
       // Fully connected triangle: C hears the message straight from A and again
       // via B, and B hears it from A and again via C.
       world.connect('A', 'B');
@@ -475,6 +492,8 @@ describe('store and forward', () => {
 describe('inventory sync', () => {
   it('reconciles what two nodes carry when they meet', () =>
     scenario(['A', 'B'], async ({ A, B }, world) => {
+      addPeer(A, B); // a mutual introduction, so both messages get acked back.
+      addPeer(B, A);
       // Both compose while apart, so neither broadcast reaches anyone.
       await A.engine.sendText(B.pub, 'from A');
       await B.engine.sendText(A.pub, 'from B');
@@ -676,6 +695,8 @@ describe('channels', () => {
 describe('groups', () => {
   it('reaches every member by fan-out and nobody else', (t) =>
     scenario(['A', 'B', 'C', 'D'], async ({ A, B, C, D }, world) => {
+      addPeer(B, A); // both members added the sender, so both receipts come back.
+      addPeer(C, A);
       // D is not a member but is the only path from A to C.
       world.connect('A', 'B');
       world.connect('A', 'D');
@@ -712,6 +733,8 @@ describe('groups', () => {
 
   it('seals one independent copy per member', (t) =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      addPeer(B, A); // so the two receipts A ends up carrying actually come back.
+      addPeer(C, A);
       world.connect('A', 'B');
       world.connect('A', 'C');
       await world.settle();
@@ -741,6 +764,7 @@ describe('groups', () => {
 describe('delivery receipts', () => {
   it('advances a direct message to delivered once the recipient acks', () =>
     scenario(['A', 'B'], async ({ A, B }, world) => {
+      addPeer(B, A); // B added A, so B acks A's message.
       world.connect('A', 'B');
       await world.settle();
 
@@ -754,6 +778,7 @@ describe('delivery receipts', () => {
 
   it('rides store-and-forward home when sender and recipient never meet', () =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      addPeer(C, A); // C added A, so C's ack travels the same path back.
       // A and C are never in range of each other; B is the only path, and it is
       // the path the receipt has to take back as well.
       world.connect('A', 'B');
@@ -772,6 +797,7 @@ describe('delivery receipts', () => {
 
   it('carries an ack across a gap in time, not just in space', () =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      addPeer(C, A); // C added A, so an ack exists to carry back later.
       // A composes with nobody in range at all: the message is queued and stays
       // queued, which is the case where the indicator matters most.
       const id = await A.engine.sendText(C.pub, 'later, then');
@@ -795,6 +821,28 @@ describe('delivery receipts', () => {
       await world.settle();
 
       assert.equal(stateOf(A, id), 'delivered');
+    }));
+
+  it('does not ack a direct message from someone the user never added', () =>
+    scenario(['victim', 'attacker'], async ({ victim, attacker }, world) => {
+      // The attacker holds the victim's public id — off a poster, a leaked
+      // code — but the victim never added the attacker. Auto-acking here would
+      // seal a signed, timestamped liveness proof straight back to an uninvited
+      // stranger, turning the app into a presence oracle: ping a device, and a
+      // returned receipt confirms that exact person is here and relaying.
+      world.connect('victim', 'attacker');
+      await world.settle();
+
+      await attacker.engine.sendText(victim.pub, 'are you here?');
+      await world.settle();
+
+      // The message is read — receiving from strangers is the whole point — but
+      // nothing is emitted in response.
+      assert.equal(inbox(victim).length, 1);
+      assert.deepEqual(injected(victim), []);
+      // The stranger is filed so the message is attributable, but as a sighting,
+      // not a relationship — which is exactly why no ack went back.
+      assert.equal(await victim.store.isAddedContact(attacker.identity.publicId), false);
     }));
 
   it('sends no receipt for a channel message', () =>
@@ -837,6 +885,7 @@ describe('delivery receipts', () => {
 
   it('does not ack an ack', () =>
     scenario(['A', 'B'], async ({ A, B }, world) => {
+      addPeer(B, A); // B added A, so the message is acked (once) — the ack is not.
       world.connect('A', 'B');
       await world.settle();
 
@@ -899,6 +948,7 @@ describe('delivery receipts', () => {
 
   it('gives a relay nothing to tell a receipt and a message apart by', () =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      addPeer(C, A); // C added A, so a receipt actually comes back for B to carry.
       world.connect('A', 'B');
       world.connect('B', 'C');
       await world.settle();
@@ -923,6 +973,8 @@ describe('delivery receipts', () => {
 
   it('holds a group message at sent until every member has acked', (t) =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      addPeer(B, A); // both members added A, so both acks count toward delivered.
+      addPeer(C, A);
       // C is out of range at send time, so only B can ack to begin with.
       world.connect('A', 'B');
       await world.settle();

@@ -597,13 +597,29 @@ export class MeshEngine {
             this.peerPrekeys.absorbWire(hit.opened.sender, parsed.prekeys);
           }
 
-          // Ack only what asked to be acked, and only in the one-to-one mode.
+          // Ack only what asked to be acked, only in the one-to-one mode, and
+          // only to someone the user actually added.
+          //
           // `conversationId === null` means this opened under our own identity —
           // a direct message, or one copy of a group fan-out, which is the same
           // thing on the wire. A channel hit is never acked even if the sender
           // put an id in the body, so a hostile or buggy peer cannot talk us
           // into announcing our presence in a channel.
-          if (hit.conversationId === null && parsed.id) {
+          //
+          // The `isAddedContact` gate is the important one: a receipt is a
+          // signed, timestamped liveness proof sealed straight back to the
+          // sender. Emitting one to anyone who direct-messages us turns the app
+          // into a presence oracle — an attacker who has our public id (off a
+          // poster, a leaked code) pings us and gets cryptographic confirmation
+          // this exact device is here and relaying. Gating on a relationship we
+          // chose, not on the wire format, is what channels already do; direct
+          // messages must be held to the same rule. Auto-filed senders (added=0)
+          // do not qualify, so a repeat ping cannot bootstrap itself into an ack.
+          if (
+            hit.conversationId === null &&
+            parsed.id &&
+            (await this.store.isAddedContact(sender))
+          ) {
             await this.sendReceipt(hit.opened.sender, parsed.id);
           }
         }

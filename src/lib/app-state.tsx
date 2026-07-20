@@ -298,6 +298,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         parsed.identity.publicId,
         chosen || shortName(parsed.identity.publicId),
       );
+      // Mark this as a person the user deliberately added, not one auto-filed
+      // from received traffic. Only added contacts get delivery receipts, so
+      // that acking never leaks our presence to an unaffiliated sender.
+      await db.markContactAdded(parsed.identity.publicId);
       // upsertContact deliberately will not overwrite an existing name, so a
       // deliberate rename needs the explicit path.
       if (chosen) await db.setContactName(parsed.identity.publicId, chosen);
