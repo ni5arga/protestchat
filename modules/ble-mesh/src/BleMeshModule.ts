@@ -22,6 +22,7 @@ declare class BleMeshNativeModule extends NativeModule<BleMeshEvents> implements
   disconnect(peerId: PeerId): Promise<void>;
   send(peerId: PeerId, payloadBase64: string): Promise<void>;
   getStatus(): Promise<BleStatus>;
+  requestAccess(): Promise<BleStatus>;
   isAvailable(): Promise<boolean>;
   rotateNow(): Promise<void>;
 }

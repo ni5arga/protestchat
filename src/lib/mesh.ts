@@ -158,9 +158,25 @@ export class MeshEngine {
       }),
     ];
 
-    await this.store.sweepExpired();
-    await this.refreshCarrying();
-    await this.transport.start(SERVICE_ID, displayName);
+    try {
+      await this.store.sweepExpired();
+      await this.refreshCarrying();
+      await this.transport.start(SERVICE_ID, displayName);
+    } catch (error) {
+      // A permission rejection (including Android's expired "Only this time"
+      // grant) must leave the engine restartable. Otherwise both this flag and
+      // BleTransport's flag stay true, every later start() becomes a no-op, and
+      // Settings misleadingly shows the radio as on while no scan is running.
+      this.running = false;
+      this.lastError = error instanceof Error ? error.message : 'Could not start the mesh radio.';
+      this.peers.clear();
+      this.connected.clear();
+      await this.transport.stop().catch(() => {});
+      for (const u of this.unsubscribes) u();
+      this.unsubscribes = [];
+      this.emit();
+      throw error;
+    }
 
     // Expiry is a security control here, not housekeeping — an envelope past
     // its TTL is evidence sitting on a phone that might get taken.

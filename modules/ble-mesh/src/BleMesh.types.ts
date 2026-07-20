@@ -40,6 +40,8 @@ export type BleState =
   | 'poweredOff'
   /** Permission denied — Android runtime permissions, or iOS Bluetooth privacy. */
   | 'unauthorized'
+  /** Android 11 and older: Location Services is off, so BLE scans return nothing. */
+  | 'locationOff'
   /** No BLE hardware, or no peripheral (advertising) role support. */
   | 'unsupported'
   /** The stack is restarting; transient, wait for the next state change. */
@@ -184,6 +186,13 @@ export type BleMeshApi = {
 
   /** Current adapter state, without waiting for an event. */
   getStatus(): Promise<BleStatus>;
+
+  /**
+   * Requests the permissions required by this OS and presents any system UI
+   * needed to turn the radio on. The returned state may still be non-ready when
+   * the user must finish the action in system UI; observe `onStateChange`.
+   */
+  requestAccess(): Promise<BleStatus>;
 
   /** Convenience for `getStatus().state === 'ready'`. */
   isAvailable(): Promise<boolean>;

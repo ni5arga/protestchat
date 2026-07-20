@@ -13,8 +13,9 @@ package expo.modules.blemesh
 //
 // Every device is simultaneously a GATT server (advertising + serving) and a
 // GATT client (scanning + connecting). There is no client/server role in a mesh.
-// Two devices will frequently connect to each other in both directions at once;
-// resolveDuplicateLinks() picks one deterministically so both sides agree.
+// Two Android devices connect in both directions at once. Both wires are kept
+// behind one logical peer so each phone can send through its GATT-client write
+// path; some Android servers silently lose larger notification payloads.
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -41,6 +42,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -48,6 +50,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.os.ParcelUuid
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -98,6 +101,14 @@ private const val HOUSEKEEPING_MS = 5_000L
  */
 private const val MIN_USABLE_WRITE = 20
 
+/**
+ * GATT servers on older Android builds can report a 517-byte MTU yet silently
+ * drop indications near that size. Keep the server-to-client path below the
+ * widely supported 185-byte ATT MTU; client writes may still use the full
+ * negotiated size.
+ */
+private const val MAX_SERVER_FRAME_BYTES = 180
+
 /** What we ask for. Android caps at 517; 512 is the largest useful ATT payload. */
 private const val REQUESTED_MTU = 512
 
@@ -142,6 +153,7 @@ private object BleErrorCode {
   const val UNSUPPORTED = "ERR_BLE_UNSUPPORTED"
   const val POWERED_OFF = "ERR_BLE_POWERED_OFF"
   const val UNAUTHORIZED = "ERR_BLE_UNAUTHORIZED"
+  const val LOCATION_OFF = "ERR_BLE_LOCATION_OFF"
   const val NOT_STARTED = "ERR_BLE_NOT_STARTED"
   const val UNKNOWN_PEER = "ERR_BLE_UNKNOWN_PEER"
   const val NOT_CONNECTED = "ERR_BLE_NOT_CONNECTED"
@@ -268,6 +280,7 @@ private class Link(
   var inbound: BluetoothGattCharacteristic? = null
 
   var usableWrite = MIN_USABLE_WRITE
+  var confirmNotifications = false
   var remoteTag: String? = null
   var announced = false
   var helloSent = false
@@ -340,6 +353,7 @@ class BleMeshModule : Module() {
   private var wantScanning = false
   private var advertising = false
   private var scanning = false
+  private var sendErrorActive = false
 
   /** Current ephemeral identifier. See rotate(). */
   private var localTag = ByteArray(0)
@@ -516,7 +530,10 @@ class BleMeshModule : Module() {
     AsyncFunction("disconnect") { peerId: String, promise: Promise ->
       handler.post {
         // Never fail on an absent peer - callers use this in cleanup paths.
-        dropLink(peerId, announce = true)
+        links.values
+          .filter { it.peerId == peerId || it.remoteTag == peerId }
+          .map { it.peerId }
+          .forEach { dropLink(it, announce = true) }
         promise.resolve(null)
       }
     }
@@ -530,8 +547,15 @@ class BleMeshModule : Module() {
       }
 
       handler.post {
-        val link = links[peerId]
-        if (link == null || !link.announced) {
+        val candidates = links.values.filter {
+          it.announced && (it.peerId == peerId || it.remoteTag == peerId)
+        }
+        // Android-to-Android peers normally have one link in each direction.
+        // Writes from the GATT client are reliable across the Samsung stacks we
+        // support; server notifications remain the fallback when that is the
+        // only link a cross-platform peer kept.
+        val link = candidates.firstOrNull { !it.isIncoming } ?: candidates.firstOrNull()
+        if (link == null) {
           failPromise(promise, BleErrorCode.NOT_CONNECTED, "Peer '$peerId' is not connected.")
           return@post
         }
@@ -558,6 +582,10 @@ class BleMeshModule : Module() {
 
     AsyncFunction("getStatus") { promise: Promise ->
       handler.post { promise.resolve(statusBundle()) }
+    }
+
+    AsyncFunction("requestAccess") { promise: Promise ->
+      requestAccess(promise)
     }
 
     AsyncFunction("isAvailable") { promise: Promise ->
@@ -618,7 +646,8 @@ class BleMeshModule : Module() {
     )
     val outbound = BluetoothGattCharacteristic(
       OUTBOUND_UUID,
-      BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+      BluetoothGattCharacteristic.PROPERTY_NOTIFY or
+        BluetoothGattCharacteristic.PROPERTY_INDICATE,
       BluetoothGattCharacteristic.PERMISSION_READ
     )
     // A NOTIFY characteristic without a CCCD is unsubscribable on Android and
@@ -834,8 +863,7 @@ class BleMeshModule : Module() {
    */
   private fun checkPumpWatchdog(link: Link, now: Long) {
     if (!link.busy || now - link.busySince <= WRITE_WATCHDOG_MS) return
-    emitError(
-      BleErrorCode.SEND_FAILED,
+    emitSendError(
       "Link '${link.peerId}' saw no GATT completion callback for " +
         "${WRITE_WATCHDOG_MS / 1000}s; continuing with ${link.pending.size} queued chunk(s)."
     )
@@ -917,8 +945,7 @@ class BleMeshModule : Module() {
       link.issueRetries = 0
       val dropped = link.pending.size
       link.pending.clear()
-      emitError(
-        BleErrorCode.SEND_FAILED,
+      emitSendError(
         "The stack refused $dropped chunk(s) for '${link.peerId}' for " +
           "${MAX_ISSUE_RETRIES * 25}ms; giving up on them."
       )
@@ -960,13 +987,22 @@ class BleMeshModule : Module() {
     val characteristic = outboundCharacteristic ?: return false
     return runCatching {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        server.notifyCharacteristicChanged(link.device, characteristic, false, frame) ==
+        server.notifyCharacteristicChanged(
+          link.device,
+          characteristic,
+          link.confirmNotifications,
+          frame
+        ) ==
           BluetoothGatt.GATT_SUCCESS
       } else {
         @Suppress("DEPRECATION")
         run {
           characteristic.value = frame
-          server.notifyCharacteristicChanged(link.device, characteristic, false)
+          server.notifyCharacteristicChanged(
+            link.device,
+            characteristic,
+            link.confirmNotifications
+          )
         }
       }
     }.getOrDefault(false)
@@ -995,7 +1031,7 @@ class BleMeshModule : Module() {
         emit(
           "onPayload",
           bundleOf(
-            "peerId" to link.peerId,
+            "peerId" to (link.remoteTag ?: link.peerId),
             "payloadBase64" to Base64.encodeToString(complete, Base64.NO_WRAP)
           )
         )
@@ -1028,11 +1064,6 @@ class BleMeshModule : Module() {
     }
     link.remoteTag = hex(tag)
 
-    resolveDuplicateLinks(link)?.let { loser ->
-      dropLink(loser, announce = links[loser]?.announced == true)
-      if (loser == link.peerId) return
-    }
-
     if (link.announced) return
     link.announced = true
     // A link that reached HELLO is proof the peer is dialable, so the backoff
@@ -1041,38 +1072,15 @@ class BleMeshModule : Module() {
     emit(
       "onConnected",
       bundleOf(
-        "id" to link.peerId,
+        // Both physical directions use the same logical id. JS stores connected
+        // peers in a Set, so the second event triggers another inventory offer
+        // without inflating "Connected to 1 phone" into two.
+        "id" to link.remoteTag,
         "name" to "",
         "mtu" to link.usableWrite,
         "isIncoming" to link.isIncoming
       )
     )
-  }
-
-  /**
-   * Two devices that discover each other simultaneously will both dial out, and
-   * both will succeed - one link in each direction, carrying the same traffic
-   * twice. Returns the peerId of the link to discard, or null if there is no
-   * duplicate.
-   *
-   * The tie-break must be computed identically on both phones from information
-   * both hold, or they discard opposite links and end up with none. Both know
-   * their own tag and their peer's, so: the device with the lexicographically
-   * smaller tag keeps the link it dialled out on. On the other phone that same
-   * link is the inbound one, so both keep the same wire.
-   */
-  private fun resolveDuplicateLinks(link: Link): String? {
-    val tag = link.remoteTag ?: return null
-    val other = links.values.firstOrNull { it.peerId != link.peerId && it.remoteTag == tag }
-      ?: return null
-
-    val weAreSmaller = hex(localTag) < tag
-    val keeper = if (weAreSmaller) {
-      if (link.isIncoming) other else link
-    } else {
-      if (link.isIncoming) link else other
-    }
-    return if (keeper.peerId == link.peerId) other.peerId else link.peerId
   }
 
   // -------------------------------------------------------------------------
@@ -1081,6 +1089,7 @@ class BleMeshModule : Module() {
 
   private fun dropLink(peerId: String, announce: Boolean) {
     val link = links.remove(peerId) ?: return
+    val logicalPeerId = link.remoteTag
     link.pending.clear()
     link.reassembler.clear()
     link.gatt?.let { gatt ->
@@ -1093,7 +1102,14 @@ class BleMeshModule : Module() {
     if (link.isIncoming) {
       runCatching { gattServer?.cancelConnection(link.device) }
     }
-    if (announce && link.announced) emit("onDisconnected", bundleOf("id" to peerId))
+    if (
+      announce &&
+      link.announced &&
+      logicalPeerId != null &&
+      links.values.none { it.announced && it.remoteTag == logicalPeerId }
+    ) {
+      emit("onDisconnected", bundleOf("id" to logicalPeerId))
+    }
   }
 
   private fun teardown() {
@@ -1102,11 +1118,12 @@ class BleMeshModule : Module() {
     housekeepingScheduled = false
     wantAdvertising = false
     wantScanning = false
+    sendErrorActive = false
 
     stopAdvertisingNow()
     stopScanningNow()
 
-    val announced = links.values.filter { it.announced }.map { it.peerId }
+    val announced = links.values.mapNotNull { if (it.announced) it.remoteTag else null }.distinct()
     for (link in links.values) {
       link.pending.clear()
       link.reassembler.clear()
@@ -1320,13 +1337,20 @@ class BleMeshModule : Module() {
           dropLink(peerId, announce = true)
           return@post
         }
+        val subscriptionValue = if (
+          outbound.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
+        ) {
+          BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+        } else {
+          BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        }
         runCatching {
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            gatt.writeDescriptor(cccd, subscriptionValue)
           } else {
             @Suppress("DEPRECATION")
             run {
-              cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+              cccd.value = subscriptionValue
               gatt.writeDescriptor(cccd)
             }
           }
@@ -1356,10 +1380,9 @@ class BleMeshModule : Module() {
         val link = links[peerIdFor("c", gatt.device.address)] ?: return@post
         link.busy = false
         if (status != BluetoothGatt.GATT_SUCCESS) {
-          emitError(
-            BleErrorCode.SEND_FAILED,
-            "Write to '${link.peerId}' failed with status $status."
-          )
+          emitSendError("Write to '${link.peerId}' failed with status $status.")
+        } else {
+          noteSendSuccess()
         }
         pump(link)
       }
@@ -1406,7 +1429,7 @@ class BleMeshModule : Module() {
     override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
       handler.post {
         links[peerIdFor("p", device.address)]?.usableWrite =
-          maxOf(MIN_USABLE_WRITE, mtu - 3)
+          minOf(maxOf(MIN_USABLE_WRITE, mtu - 3), MAX_SERVER_FRAME_BYTES)
       }
     }
 
@@ -1426,11 +1449,18 @@ class BleMeshModule : Module() {
           }
         }
         if (descriptor.uuid != CCCD_UUID) return@post
-        val subscribing = value != null &&
-          value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        val indicating = value != null &&
+          value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
+        val subscribing = indicating || (value != null &&
+          value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
         val peerId = peerIdFor("p", device.address)
         if (subscribing) {
           val link = links.getOrPut(peerId) { Link(peerId, isIncoming = true, device = device) }
+          // Indications are acknowledged by the client. Prefer them for Android
+          // peers, whose notification stacks can report success while dropping
+          // a multi-frame payload. Still honour plain notifications for iOS and
+          // older peers that subscribe to that mode.
+          link.confirmNotifications = indicating
           sendHello(link)
         } else {
           dropLink(peerId, announce = true)
@@ -1470,10 +1500,9 @@ class BleMeshModule : Module() {
         val link = links[peerIdFor("p", device.address)] ?: return@post
         link.busy = false
         if (status != BluetoothGatt.GATT_SUCCESS) {
-          emitError(
-            BleErrorCode.SEND_FAILED,
-            "Notification to '${link.peerId}' failed with status $status."
-          )
+          emitSendError("Notification to '${link.peerId}' failed with status $status.")
+        } else {
+          noteSendSuccess()
         }
         pump(link)
       }
@@ -1506,10 +1535,16 @@ class BleMeshModule : Module() {
       }
     }
     runCatching {
+      val filter = IntentFilter().apply {
+        addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+          addAction(LocationManager.MODE_CHANGED_ACTION)
+        }
+      }
       ContextCompat.registerReceiver(
         context,
         receiver,
-        IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+        filter,
         ContextCompat.RECEIVER_NOT_EXPORTED
       )
       stateReceiver = receiver
@@ -1533,6 +1568,9 @@ class BleMeshModule : Module() {
     // isEnabled unreadable on some OEM builds and would otherwise be reported as
     // "Bluetooth is off", sending the user to fix something that is not broken.
     if (!hasRequiredPermissions(context)) return "unauthorized"
+    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R && !isLocationEnabled(context)) {
+      return "locationOff"
+    }
     if (!current.isEnabled) return "poweredOff"
     if (current.bluetoothLeAdvertiser == null) return "unsupported"
     return "ready"
@@ -1551,6 +1589,7 @@ class BleMeshModule : Module() {
     "ready" -> ""
     "poweredOff" -> "Bluetooth is switched off. Turn it on in Quick Settings."
     "unauthorized" -> "protestchat is not allowed to use Bluetooth. Grant the Nearby devices permission in Settings."
+    "locationOff" -> "Location Services must be on for Bluetooth scanning on this version of Android."
     "unsupported" -> "This device cannot advertise over Bluetooth LE, so it cannot join the mesh."
     "resetting" -> "The Bluetooth stack is restarting."
     else -> "Bluetooth state is not known yet."
@@ -1565,6 +1604,7 @@ class BleMeshModule : Module() {
       val code = when (state) {
         "poweredOff" -> BleErrorCode.POWERED_OFF
         "unauthorized" -> BleErrorCode.UNAUTHORIZED
+        "locationOff" -> BleErrorCode.LOCATION_OFF
         "unsupported" -> BleErrorCode.UNSUPPORTED
         else -> BleErrorCode.INTERNAL
       }
@@ -1599,6 +1639,66 @@ class BleMeshModule : Module() {
     requiredPermissions().all {
       ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
+
+  private fun isLocationEnabled(context: Context): Boolean {
+    val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+      ?: return false
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      manager.isLocationEnabled
+    } else {
+      manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+        manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+    }
+  }
+
+  /**
+   * Requests the runtime permission first, then presents the OS-owned control
+   * for the next unmet requirement. Android does not allow an app to silently
+   * switch either Bluetooth or Location Services on; the user must approve the
+   * system UI.
+   */
+  private fun requestAccess(promise: Promise) {
+    val permissions = requiredPermissions()
+    val manager = appContext.permissions
+    if (manager == null) {
+      mainHandler.post {
+        promptForMissingRequirement()
+        promise.resolve(statusBundle())
+      }
+      return
+    }
+
+    manager.askForPermissions(
+      PermissionsResponseListener { result: Map<String, PermissionsResponse> ->
+        val denied = permissions.any { result[it]?.status != PermissionsStatus.GRANTED }
+        if (denied) {
+          handler.post {
+            publishStateIfChanged()
+            promise.resolve(statusBundle())
+          }
+          return@PermissionsResponseListener
+        }
+
+        registerStateReceiver()
+        mainHandler.post {
+          promptForMissingRequirement()
+          promise.resolve(statusBundle())
+        }
+      },
+      *permissions
+    )
+  }
+
+  private fun promptForMissingRequirement() {
+    val activity = appContext.currentActivity ?: return
+    val action = when (currentState()) {
+      "locationOff" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+      "poweredOff" -> BluetoothAdapter.ACTION_REQUEST_ENABLE
+      else -> return
+    }
+    runCatching { activity.startActivity(Intent(action)) }
+      .onFailure { emitError(BleErrorCode.INTERNAL, describe(it)) }
+  }
 
   /** Requests the API-level-appropriate permissions, then runs [block] if granted. */
   private fun withPermissions(promise: Promise, block: () -> Unit) {
@@ -1684,6 +1784,23 @@ class BleMeshModule : Module() {
 
   private fun emitError(code: String, message: String) {
     emit("onError", bundleOf("message" to message, "code" to code))
+  }
+
+  /**
+   * A redundant BLE direction can fail while another direction to the same
+   * logical peer succeeds moments later. Keep the failure visible until the
+   * stack proves it can send again, then clear only this class of transient
+   * error instead of leaving a successful connection labelled as broken.
+   */
+  private fun emitSendError(message: String) {
+    sendErrorActive = true
+    emitError(BleErrorCode.SEND_FAILED, message)
+  }
+
+  private fun noteSendSuccess() {
+    if (!sendErrorActive) return
+    sendErrorActive = false
+    emit("onError", bundleOf("message" to "", "code" to BleErrorCode.SEND_FAILED))
   }
 
   /** Every failure both rejects the promise and surfaces on `onError`. */

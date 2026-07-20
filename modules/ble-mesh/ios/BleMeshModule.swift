@@ -88,6 +88,7 @@ private enum BleErrorCode {
   static let unsupported = "ERR_BLE_UNSUPPORTED"
   static let poweredOff = "ERR_BLE_POWERED_OFF"
   static let unauthorized = "ERR_BLE_UNAUTHORIZED"
+  static let locationOff = "ERR_BLE_LOCATION_OFF"
   static let notStarted = "ERR_BLE_NOT_STARTED"
   static let unknownPeer = "ERR_BLE_UNKNOWN_PEER"
   static let notConnected = "ERR_BLE_NOT_CONNECTED"
@@ -423,6 +424,16 @@ private final class BleMeshRadio: NSObject {
     queue.async { completion(self.statusDictionary()) }
   }
 
+  func requestAccess(completion: @escaping ([String: Any]) -> Void) {
+    queue.async {
+      // Constructing CoreBluetooth managers is the public iOS API for requesting
+      // Bluetooth access. The state-change callback supplies the final result
+      // after the system permission or power alert has been answered.
+      self.ensureManagers()
+      completion(self.statusDictionary())
+    }
+  }
+
   func isAvailable(completion: @escaping (Bool) -> Void) {
     queue.async { completion(self.currentState() == "ready") }
   }
@@ -450,7 +461,7 @@ private final class BleMeshRadio: NSObject {
       central = CBCentralManager(
         delegate: self,
         queue: queue,
-        options: [CBCentralManagerOptionShowPowerAlertKey: false]
+        options: [CBCentralManagerOptionShowPowerAlertKey: true]
       )
     }
     if peripheralManager == nil {
@@ -1309,6 +1320,10 @@ public final class BleMeshModule: Module {
 
     AsyncFunction("getStatus") { (promise: Promise) in
       self.radio.status { promise.resolve($0) }
+    }
+
+    AsyncFunction("requestAccess") { (promise: Promise) in
+      self.radio.requestAccess { promise.resolve($0) }
     }
 
     AsyncFunction("isAvailable") { (promise: Promise) in

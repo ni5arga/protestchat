@@ -73,6 +73,11 @@ export function getStatus() {
   return BleMesh.getStatus();
 }
 
+/** Requests the OS permissions and presents controls needed to enable BLE. */
+export function requestAccess() {
+  return BleMesh.requestAccess();
+}
+
 /** Whether the BLE transport can run on this device right now. */
 export function isAvailable(): Promise<boolean> {
   return BleMesh.isAvailable();
