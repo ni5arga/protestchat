@@ -33,7 +33,9 @@ export function publicKeyFromKeyId(id: KeyId): Uint8Array {
 
 export function equalKeyId(a: KeyId, b: KeyId): boolean {
   // KeyIds are public (Ed25519 public keys), so timing is not a concern.
-  return a === b;
+  // Normalize to lowercase for comparison since hex is case-insensitive
+  // but keyIdFromPublicKey always produces lowercase.
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +246,9 @@ export type VerificationStatus =
  */
 export interface VerificationResult {
   status: VerificationStatus;
-  signed: SignedStatement;
+  /** The signed statement. Absent for error cases where no statement exists
+   *  (e.g. validateEmergency called with an unknown statement ID). */
+  signed?: SignedStatement;
   /** The trust chain from issuer to a root, if applicable */
   trustChain?: Entity[];
   /** Validations collected, for emergency statements */
@@ -274,6 +278,9 @@ export interface VerificationResult {
  */
 export function serializeStatement(stmt: Statement): Uint8Array {
   const typeIndex = STATEMENT_TYPE_INDEX[stmt.type];
+  if (typeIndex === undefined) {
+    throw new Error(`Unknown statement type: ${stmt.type}`);
+  }
   const issuerRaw = publicKeyFromKeyId(stmt.issuer);
   const payloadLen = stmt.payload.length;
   const hasExpiry = stmt.expiresAt !== undefined;
@@ -296,13 +303,13 @@ export function serializeStatement(stmt: Statement): Uint8Array {
   return buf;
 }
 
-const STATEMENT_TYPE_INDEX: Record<StatementType, number> = {
+const STATEMENT_TYPE_INDEX: Readonly<Record<StatementType, number>> = Object.freeze({
   text: 0,
   delegation: 1,
   revocation: 2,
   announcement: 3,
   emergency: 4,
-};
+});
 
 // ---------------------------------------------------------------------------
 // Hashing

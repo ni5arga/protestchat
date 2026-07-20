@@ -5,7 +5,6 @@
  */
 
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { keyIdFromPublicKey } from '../types';
 import type { KeyId } from '../types';

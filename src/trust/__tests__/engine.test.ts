@@ -13,16 +13,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { TrustEngine } from '../engine';
 import { createMemoryTrustStore } from '../store';
 import type { TrustStore } from '../store';
 import {
-  keyIdFromPublicKey,
   serializeStatement,
   hashStatement,
-  publicKeyFromKeyId,
 } from '../types';
 import type { Statement, StatementType, SignedStatement, KeyId, Scope } from '../types';
 import { createKeys, type TestKeyPair } from './fixtures';
@@ -219,7 +216,8 @@ describe('TrustEngine', () => {
         JSON.stringify({ target: target.id, reason: 'compromised' }),
       );
       const revokedSigned = sign(root, 'revocation', revokePayload);
-      await e.verify(revokedSigned);
+      const revResult = await e.verify(revokedSigned);
+      assert.equal(revResult.status, 'trusted', 'Revocation must be accepted');
 
       // Now target's message should be revoked
       const signed = sign(target, 'text', new TextEncoder().encode('hello'));
@@ -329,39 +327,25 @@ describe('TrustEngine', () => {
       assert.equal(chain, null);
     });
 
-    it('detects cycles in delegation chain', async () => {
-      const e = makeEngine();
-      const [a, b] = createKeys(2);
-      await e.subscribe(a.publicKey, 'A', 'none');
-      await e.subscribe(b.publicKey, 'B', 'none');
-
-      // Manually create a cycle: A delegates to B, B delegates to A
+    it('detects pure cycles (no root in any path)', async () => {
       const store = createMemoryTrustStore();
+      const [a, b, c] = createKeys(3);
+
+      // Create a pure cycle: A -> B -> C -> A (delegated, no root)
+      for (const key of [a, b, c]) {
+        await store.addEntity({
+          id: key.id, publicKey: key.publicKey, name: 'node',
+          trustKind: 'delegated', addedAt: Date.now(), metadata: {},
+        });
+      }
+      await store.addDelegation({ id: 'ab', issuer: a.id, delegate: b.id, scope: ['certify'], issuedAt: Date.now(), statementId: 's1' });
+      await store.addDelegation({ id: 'bc', issuer: b.id, delegate: c.id, scope: ['certify'], issuedAt: Date.now(), statementId: 's2' });
+      await store.addDelegation({ id: 'ca', issuer: c.id, delegate: a.id, scope: ['certify'], issuedAt: Date.now(), statementId: 's3' });
+
       const eng = new TrustEngine(store);
-
-      // Add both as delegated via manual store manipulation
-      await store.addEntity({
-        id: a.id, publicKey: a.publicKey, name: 'A',
-        trustKind: 'delegated', addedAt: Date.now(), metadata: {},
-      });
-      await store.addEntity({
-        id: b.id, publicKey: b.publicKey, name: 'B',
-        trustKind: 'delegated', addedAt: Date.now(), metadata: {},
-      });
-      // A delegates to B (announce)
-      await store.addDelegation({
-        id: 'd1', issuer: a.id, delegate: b.id,
-        scope: ['announce'], issuedAt: Date.now(), statementId: 's1',
-      });
-      // B delegates to A (announce)
-      await store.addDelegation({
-        id: 'd2', issuer: b.id, delegate: a.id,
-        scope: ['announce'], issuedAt: Date.now(), statementId: 's2',
-      });
-
-      // Neither chain terminates at a root
-      assert.equal(await eng.getTrustChain(a.id, 'announce'), null);
-      assert.equal(await eng.getTrustChain(b.id, 'announce'), null);
+      assert.equal(await eng.getTrustChain(a.id, 'certify'), null);
+      assert.equal(await eng.getTrustChain(b.id, 'certify'), null);
+      assert.equal(await eng.getTrustChain(c.id, 'certify'), null);
     });
   });
 
@@ -852,9 +836,11 @@ describe('TrustEngine', () => {
       await e.subscribe(root.publicKey, 'Root', 'root');
 
       const payload = new TextEncoder().encode('test');
+      // Create with a valid type for signing, then swap it.
+      // This tests how verify() handles a mutated statement type.
       const stmt: Statement = {
         id: '',
-        type: 'unknown_type' as unknown as StatementType,
+        type: 'text',
         issuer: root.id,
         payload,
         issuedAt: Date.now(),
@@ -862,22 +848,12 @@ describe('TrustEngine', () => {
       stmt.id = hashStatement(stmt);
       const serialized = serializeStatement(stmt);
       const signature = ed25519.sign(serialized, root.secretKey);
+      // Swap the type after signing to simulate a malformed statement
+      stmt.type = 'unknown_type' as unknown as StatementType;
 
       const result = await e.verify({ statement: stmt, signature });
       assert.equal(result.status, 'untrusted');
-      assert.ok(result.reason?.includes('Unknown statement type'));
-    });
-  });
-
-  describe('validateEmergency with non-existent id', () => {
-    it('returns null for unknown statement', async () => {
-      const e = makeEngine();
-      const [root, v] = createKeys(2);
-      await e.subscribe(root.publicKey, 'Root', 'root');
-      await e.verify(await e.delegate(root.secretKey, root.id, v.publicKey, ['validate']));
-
-      const result = await e.validateEmergency(v.secretKey, v.id, 'nonexistent-id');
-      assert.equal(result.status, 'untrusted');
+      assert.ok(result.reason?.includes('Cannot serialize'));
     });
   });
 
@@ -959,6 +935,261 @@ describe('TrustEngine', () => {
         () => e.subscribe(new Uint8Array(16), 'Bad', 'none'),
         /must be 32 bytes/,
       );
+    });
+  });
+
+  describe('subscribeRoot and addContact', () => {
+    it('subscribeRoot creates a root entity', async () => {
+      const e = makeEngine();
+      const [key] = createKeys(1);
+      const entity = await e.subscribeRoot(key.publicKey, 'Committee');
+      assert.equal(entity.trustKind, 'root');
+    });
+
+    it('addContact creates a direct entity', async () => {
+      const e = makeEngine();
+      const [key] = createKeys(1);
+      const entity = await e.addContact(key.publicKey, 'Alice');
+      assert.equal(entity.trustKind, 'direct');
+    });
+  });
+
+  describe('listSubscribed', () => {
+    it('returns only root and direct entities', async () => {
+      const e = makeEngine();
+      const [r, d, del, n] = createKeys(4);
+      await e.subscribeRoot(r.publicKey, 'Root');
+      await e.addContact(d.publicKey, 'Direct');
+      await e.subscribe(del.publicKey, 'Delegated', 'delegated');
+      await e.subscribe(n.publicKey, 'None', 'none');
+
+      const subscribed = await e.listSubscribed();
+      assert.equal(subscribed.length, 2);
+      const kinds = subscribed.map((e) => e.trustKind).sort();
+      assert.deepEqual(kinds, ['direct', 'root']);
+    });
+  });
+
+  describe('ensureEntity then subscribe upgrade', () => {
+    it('upgrades from none to root', async () => {
+      const e = makeEngine();
+      const [key] = createKeys(1);
+
+      const auto = await e.ensureEntity(key.publicKey);
+      assert.equal(auto.trustKind, 'none');
+
+      const upgraded = await e.subscribe(key.publicKey, 'Now Root', 'root');
+      assert.equal(upgraded.trustKind, 'root');
+      assert.equal(upgraded.name, 'Now Root');
+    });
+
+    it('subscribe does not downgrade an existing root', async () => {
+      const e = makeEngine();
+      const [key] = createKeys(1);
+
+      await e.subscribe(key.publicKey, 'Root', 'root');
+      const result = await e.subscribe(key.publicKey, 'Try Downgrade', 'direct');
+      assert.equal(result.trustKind, 'root');
+    });
+  });
+
+  describe('validateEmergency PoP rejection', () => {
+    it('throws when validator secret does not match validatorId', async () => {
+      const e = makeEngine();
+      const [root, validator, wrongKey, sender] = createKeys(4);
+      await e.subscribe(root.publicKey, 'Root', 'root');
+      await e.subscribe(sender.publicKey, 'Sender', 'none');
+      await e.verify(await e.delegate(root.secretKey, root.id, validator.publicKey, ['validate']));
+
+      const emergency = await e.sign(sender.secretKey, 'emergency', new TextEncoder().encode('help'), sender.id);
+      await e.verify(emergency);
+
+      // Call with a different secret key than the validator owns
+      await assert.rejects(
+        () => e.validateEmergency(wrongKey.secretKey, validator.id, emergency.statement.id),
+        /does not match/,
+      );
+    });
+  });
+
+  describe('validateEmergency unknown statement', () => {
+    it('returns untrusted without signed field for unknown id', async () => {
+      const e = makeEngine();
+      const [root, v] = createKeys(2);
+      await e.subscribe(root.publicKey, 'Root', 'root');
+      await e.verify(await e.delegate(root.secretKey, root.id, v.publicKey, ['validate']));
+
+      const result = await e.validateEmergency(v.secretKey, v.id, 'nonexistent-statement');
+      assert.equal(result.status, 'untrusted');
+      assert.equal(result.signed, undefined);
+    });
+  });
+
+  describe('two-level delegation through verify', () => {
+    it('returns trusted for message signed by two-level delegation chain', async () => {
+      const e = makeEngine();
+      const [root, intermediate, leaf] = createKeys(3);
+      await e.subscribe(root.publicKey, 'Root', 'root');
+      await e.subscribe(leaf.publicKey, 'Leaf', 'none');
+
+      // Root delegates certify to intermediate
+      const d1 = await e.delegate(root.secretKey, root.id, intermediate.publicKey, ['certify']);
+      await e.verify(d1);
+
+      // Intermediate delegates announce to leaf
+      const d2 = await e.delegate(intermediate.secretKey, intermediate.id, leaf.publicKey, ['announce']);
+      await e.verify(d2);
+
+      // Leaf signs an announcement — verify() should return trusted
+      const announcement = await e.sign(
+        leaf.secretKey,
+        'announcement',
+        new TextEncoder().encode('rally at 6pm'),
+        leaf.id,
+      );
+      const result = await e.verify(announcement);
+
+      assert.equal(result.status, 'trusted');
+      assert.ok(result.trustChain);
+      assert.equal(result.trustChain!.length, 3); // leaf → intermediate → root
+      assert.equal(result.trustChain![2].trustKind, 'root');
+    });
+  });
+
+  describe('serializeStatement guard', () => {
+    it('throws on unknown statement type', () => {
+      const stmt: Statement = {
+        id: '',
+        type: 'bogus_type' as unknown as StatementType,
+        issuer: 'abc',
+        payload: new Uint8Array(0),
+        issuedAt: 0,
+      };
+      assert.throws(
+        () => serializeStatement(stmt),
+        /Unknown statement type/,
+      );
+    });
+  });
+
+  describe('getTrustChain backtracking', () => {
+    it('tries alternative delegation when newest path fails', async () => {
+      const e = makeEngine();
+      const [rootA, rootB, entity] = createKeys(3);
+      await e.subscribe(rootA.publicKey, 'RootA', 'root');
+      await e.subscribe(rootB.publicKey, 'RootB', 'root');
+      await e.subscribe(entity.publicKey, 'Entity', 'none');
+
+      // RootA delegates certify to entity (older)
+      const delA = await e.delegate(rootA.secretKey, rootA.id, entity.publicKey, ['certify']);
+      await e.verify(delA);
+
+      // RootB delegates certify to entity (newer — will be tried first)
+      const delB = await e.delegate(rootB.secretKey, rootB.id, entity.publicKey, ['certify']);
+      await e.verify(delB);
+
+      // Revoke RootB (breaks the newer chain)
+      const revokeB = await e.revoke(rootA.secretKey, rootA.id, rootB.id, 'compromised');
+      await e.verify(revokeB);
+
+      // Chain should still resolve via RootA (older path)
+      const chain = await e.getTrustChain(entity.id, 'certify');
+      assert.ok(chain, 'should backtrack to older valid delegation');
+      assert.equal(chain!.length, 2);
+      assert.equal(chain![1].id, rootA.id);
+    });
+  });
+
+  describe('self-delegation rejection', () => {
+    it('rejects delegation where issuer equals delegate', async () => {
+      const e = makeEngine();
+      const [root] = createKeys(1);
+      await e.subscribe(root.publicKey, 'Root', 'root');
+
+      const delegation = await e.delegate(root.secretKey, root.id, root.publicKey, ['announce']);
+      const result = await e.verify(delegation);
+      assert.equal(result.status, 'untrusted');
+      assert.ok(result.reason?.includes('Self-delegation'));
+    });
+  });
+
+  describe('expired delegation in chain', () => {
+    it('filters out expired delegations during chain resolution', async () => {
+      const e = makeEngine();
+      const [root, mid, leaf] = createKeys(3);
+      await e.subscribe(root.publicKey, 'Root', 'root');
+      await e.subscribe(leaf.publicKey, 'Leaf', 'none');
+
+      // Accept the delegation chain first (valid expiry far in the future)
+      const del1 = await e.delegate(root.secretKey, root.id, mid.publicKey, ['certify'], Date.now() + 86400000);
+      await e.verify(del1);
+      const del2 = await e.delegate(mid.secretKey, mid.id, leaf.publicKey, ['announce']);
+      await e.verify(del2);
+
+      // Chain works before expiry
+      assert.ok(await e.getTrustChain(leaf.id, 'announce'));
+
+      // Manually expire mid's delegation by modifying the store
+      const delegations = await e.getStore().getDelegationsForDelegate(mid.id);
+      for (const d of delegations) {
+        if (d.issuer === root.id) {
+          // Remove the valid delegation and re-add with past expiry
+          await e.getStore().removeDelegation(d.id);
+          await e.getStore().addDelegation({
+            ...d,
+            expiresAt: Date.now() - 1000,
+          });
+        }
+      }
+
+      // Chain should now fail due to expired delegation
+      assert.equal(await e.getTrustChain(leaf.id, 'announce'), null);
+    });
+  });
+
+  describe('validateEmergency with direct entity', () => {
+    it('rejects validation from a direct entity (no validate scope)', async () => {
+      const e = makeEngine();
+      const [root, direct, sender] = createKeys(3);
+      await e.subscribe(root.publicKey, 'Root', 'root');
+      await e.subscribe(direct.publicKey, 'Direct', 'direct');
+      await e.subscribe(sender.publicKey, 'Sender', 'none');
+
+      const emergency = await e.sign(sender.secretKey, 'emergency', new TextEncoder().encode('help'), sender.id);
+      await e.verify(emergency);
+
+      const result = await e.validateEmergency(direct.secretKey, direct.id, emergency.statement.id);
+      assert.equal(result.status, 'untrusted');
+      assert.ok(result.reason?.includes('validate scope'));
+    });
+  });
+
+  describe('validateEmergency with root entity', () => {
+    it('allows root to validate (root has all scopes)', async () => {
+      const e = makeEngine();
+      const [root, sender] = createKeys(2);
+      await e.subscribe(root.publicKey, 'Root', 'root');
+      await e.subscribe(sender.publicKey, 'Sender', 'none');
+
+      const emergency = await e.sign(sender.secretKey, 'emergency', new TextEncoder().encode('emergency'), sender.id);
+      await e.verify(emergency);
+
+      const result = await e.validateEmergency(root.secretKey, root.id, emergency.statement.id);
+      assert.notEqual(result.status, 'untrusted');
+    });
+  });
+
+  describe('engine.clearAll', () => {
+    it('removes all entities and state', async () => {
+      const e = makeEngine();
+      const [root, leaf] = createKeys(2);
+      await e.subscribe(root.publicKey, 'Root', 'root');
+      await e.subscribe(leaf.publicKey, 'Leaf', 'none');
+      await e.verify(await e.delegate(root.secretKey, root.id, leaf.publicKey, ['announce']));
+
+      assert((await e.listEntities()).length > 0);
+      await e.clearAll();
+      assert.equal((await e.listEntities()).length, 0);
     });
   });
 });
