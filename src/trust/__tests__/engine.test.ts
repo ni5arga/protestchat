@@ -24,7 +24,7 @@ import {
   hashStatement,
   publicKeyFromKeyId,
 } from '../types';
-import type { Statement, SignedStatement, KeyId, Scope } from '../types';
+import type { Statement, StatementType, SignedStatement, KeyId, Scope } from '../types';
 import { createKeys, type TestKeyPair } from './fixtures';
 
 // ---------------------------------------------------------------------------
@@ -854,7 +854,7 @@ describe('TrustEngine', () => {
       const payload = new TextEncoder().encode('test');
       const stmt: Statement = {
         id: '',
-        type: 'unknown_type' as StatementType,
+        type: 'unknown_type' as unknown as StatementType,
         issuer: root.id,
         payload,
         issuedAt: Date.now(),

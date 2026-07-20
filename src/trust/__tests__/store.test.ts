@@ -241,8 +241,8 @@ describe('MemoryTrustStore', () => {
       const s = createMemoryTrustStore();
       const [v1, v2] = createKeys(2);
 
-      await s.addValidation({ statementId: 'em1', validator: v1.id, validatedAt: Date.now() });
-      await s.addValidation({ statementId: 'em1', validator: v2.id, validatedAt: Date.now() });
+      await s.addValidation({ statementId: 'em1', validator: v1.id, validatedAt: Date.now(), signature: new Uint8Array(64) });
+      await s.addValidation({ statementId: 'em1', validator: v2.id, validatedAt: Date.now(), signature: new Uint8Array(64) });
 
       assert.equal(await s.getValidationCount('em1'), 2);
     });
@@ -251,8 +251,8 @@ describe('MemoryTrustStore', () => {
       const s = createMemoryTrustStore();
       const [v] = createKeys(1);
 
-      await s.addValidation({ statementId: 'em1', validator: v.id, validatedAt: Date.now() });
-      await s.addValidation({ statementId: 'em1', validator: v.id, validatedAt: Date.now() });
+      await s.addValidation({ statementId: 'em1', validator: v.id, validatedAt: Date.now(), signature: new Uint8Array(64) });
+      await s.addValidation({ statementId: 'em1', validator: v.id, validatedAt: Date.now(), signature: new Uint8Array(64) });
 
       assert.equal(await s.getValidationCount('em1'), 1);
     });
@@ -261,7 +261,7 @@ describe('MemoryTrustStore', () => {
       const s = createMemoryTrustStore();
       const [v] = createKeys(1);
 
-      await s.addValidation({ statementId: 'em1', validator: v.id, validatedAt: Date.now() });
+      await s.addValidation({ statementId: 'em1', validator: v.id, validatedAt: Date.now(), signature: new Uint8Array(64) });
 
       const vals = await s.getValidationsForStatement('em1');
       assert.equal(vals.length, 1);
@@ -456,7 +456,7 @@ describe('MemoryTrustStore', () => {
         id: 'd1', issuer: issuer.id, delegate: delegate.id,
         scope: ['announce'], issuedAt: Date.now(), statementId: 'stmt1',
       });
-      await s.addValidation({ statementId: 'stmt1', validator: issuer.id, validatedAt: Date.now() });
+      await s.addValidation({ statementId: 'stmt1', validator: issuer.id, validatedAt: Date.now(), signature: new Uint8Array(64) });
       await s.removeDelegation('d1');
       assert.equal((await s.getValidationsForStatement('stmt1')).length, 0);
     });
