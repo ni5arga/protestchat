@@ -11,7 +11,6 @@
 
 import { ed25519 } from '@noble/curves/ed25519.js';
 
-
 import type {
   KeyId,
   Entity,
@@ -30,7 +29,7 @@ import {
   publicKeyFromKeyId,
   keyIdFromPublicKey,
   serializeStatement,
-  hashStatement,
+  hashSerialized,
   ALL_SCOPES,
 } from './types';
 import type { TrustStore } from './store';
@@ -216,9 +215,11 @@ export class TrustEngine {
       issuedAt: Date.now(),
       expiresAt,
     };
-    statement.id = hashStatement(statement);
-
+    // Serialize once: hash and signing use the same canonical bytes.
+    // The statement ID is not part of the canonical encoding, so it
+    // doesn't need to be set before serialization.
     const serialized = serializeStatement(statement);
+    statement.id = hashSerialized(serialized);
     const signature = ed25519.sign(serialized, secretKey);
 
     return { statement, signature };
@@ -244,7 +245,7 @@ export class TrustEngine {
       issuedAt,
       expiresAt,
     };
-    statement.id = hashStatement(statement);
+    // ID is set by verify() — no need to compute it here
     const signed: SignedStatement = { statement, signature: new Uint8Array(signature) };
     return this.verify(signed);
   }
@@ -266,7 +267,7 @@ export class TrustEngine {
       return reject(signed, 'unknown-issuer', 'Invalid issuer key ID');
     }
 
-    // Verify the signature
+    // Serialize once and reuse: sig check + hash below use the same bytes.
     const serialized = serializeStatement(stmt);
     let valid: boolean;
     try {
@@ -281,7 +282,7 @@ export class TrustEngine {
     // ---- 2. Statement ID integrity ----
     // The ID is not part of the canonical serialization, so it can be set
     // independently. We always use our own computed ID for local indexing.
-    stmt.id = hashStatement(stmt);
+    stmt.id = hashSerialized(serialized);
 
     // ---- 3. Look up issuer entity ----
     const entity = await this.store.getEntity(stmt.issuer);

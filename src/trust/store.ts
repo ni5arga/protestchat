@@ -96,6 +96,16 @@ export interface TrustStore {
   removePendingEmergency(statementId: string): Promise<void>;
   getPendingEmergencies(): Promise<SignedStatement[]>;
   getPendingEmergency(statementId: string): Promise<SignedStatement | null>;
+
+  // ---- Lifecycle ----
+  /** Remove all data from the store. For panic wipe and testing. */
+  clearAll(): Promise<void>;
+  /**
+   * Whether data persists across restarts. Memory stores return false;
+   * SQLite adapters return true. Used by the engine to decide whether
+   * to cache/copy sensitive trust graph data.
+   */
+  isPersistent(): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +128,8 @@ export function createMemoryTrustStore(): TrustStore {
   const byIssuer = new Map<KeyId, Set<string>>();
   // Per-target index: target KeyId → Set<revocation ID>
   const byRevokedTarget = new Map<KeyId, Set<string>>();
+  // Per-issuer index: issuer KeyId → Set<revocation ID>
+  const byRevocationIssuer = new Map<KeyId, Set<string>>();
 
   /** Remove a delegation ID from an index map, cleaning up empty Sets. */
   function removeFromIndex(map: Map<KeyId, Set<string>>, key: KeyId, id: string): void {
@@ -136,11 +148,10 @@ export function createMemoryTrustStore(): TrustStore {
     async removeEntity(id) {
       entities.delete(id);
 
-      // Remove delegations involving this entity (both as delegate and issuer)
+      // Remove delegations involving this entity using indexes (O(m) not O(n))
       const delIds = new Set<string>();
-      for (const d of delegations.values()) {
-        if (d.delegate === id || d.issuer === id) delIds.add(d.id);
-      }
+      for (const did of (byDelegate.get(id) ?? [])) delIds.add(did);
+      for (const did of (byIssuer.get(id) ?? [])) delIds.add(did);
       for (const dId of delIds) {
         const d = delegations.get(dId);
         if (d) {
@@ -159,12 +170,17 @@ export function createMemoryTrustStore(): TrustStore {
         byRevokedTarget.delete(id);
       }
 
-      // Remove revocations issued BY this entity
-      for (const [rId, r] of revocations) {
-        if (r.issuer === id) {
-          revocations.delete(rId);
-          removeFromIndex(byRevokedTarget, r.target, rId);
+      // Remove revocations issued BY this entity (O(m) via index)
+      const issuerRevIds = byRevocationIssuer.get(id);
+      if (issuerRevIds) {
+        for (const rId of issuerRevIds) {
+          const r = revocations.get(rId);
+          if (r) {
+            revocations.delete(rId);
+            removeFromIndex(byRevokedTarget, r.target, rId);
+          }
         }
+        byRevocationIssuer.delete(id);
       }
 
       // Remove pending emergencies from this entity (and their validations)
@@ -251,12 +267,17 @@ export function createMemoryTrustStore(): TrustStore {
       const targetSet = byRevokedTarget.get(r.target) ?? new Set();
       targetSet.add(r.id);
       byRevokedTarget.set(r.target, targetSet);
+
+      const issuerSet = byRevocationIssuer.get(r.issuer) ?? new Set();
+      issuerSet.add(r.id);
+      byRevocationIssuer.set(r.issuer, issuerSet);
     },
 
     async removeRevocation(id) {
       const r = revocations.get(id);
       if (r) {
         removeFromIndex(byRevokedTarget, r.target, id);
+        removeFromIndex(byRevocationIssuer, r.issuer, id);
       }
       revocations.delete(id);
     },
@@ -327,6 +348,23 @@ export function createMemoryTrustStore(): TrustStore {
     async getPendingEmergency(statementId) {
       const s = pendingEmergencies.get(statementId);
       return s ? cloneSignedStatement(s) : null;
+    },
+
+    // ---- Lifecycle ----
+    async clearAll() {
+      entities.clear();
+      delegations.clear();
+      revocations.clear();
+      validations.clear();
+      pendingEmergencies.clear();
+      byDelegate.clear();
+      byIssuer.clear();
+      byRevokedTarget.clear();
+      byRevocationIssuer.clear();
+    },
+
+    isPersistent() {
+      return false;
     },
   };
 }

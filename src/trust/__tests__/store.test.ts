@@ -489,4 +489,27 @@ describe('MemoryTrustStore', () => {
       assert.equal(got!.name, 'Test');
     });
   });
+
+  describe('clearAll', () => {
+    it('removes all data from the store', async () => {
+      const s = createMemoryTrustStore();
+      const [key] = createKeys(1);
+      await s.addEntity({ id: key.id, publicKey: key.publicKey, name: 'Test', trustKind: 'none', addedAt: Date.now(), metadata: {} });
+      await s.addDelegation({ id: 'd1', issuer: key.id, delegate: 'other', scope: ['announce'], issuedAt: Date.now(), statementId: 's1' });
+      await s.addRevocation({ id: 'r1', issuer: key.id, target: 'other', reason: 'x', issuedAt: Date.now(), statementId: 's1' });
+
+      await s.clearAll();
+
+      assert.equal((await s.listEntities()).length, 0);
+      assert.equal((await s.listDelegations()).length, 0);
+      assert.equal((await s.listRevocations()).length, 0);
+    });
+  });
+
+  describe('isPersistent', () => {
+    it('returns false for memory store', () => {
+      const s = createMemoryTrustStore();
+      assert.equal(s.isPersistent(), false);
+    });
+  });
 });

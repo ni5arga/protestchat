@@ -292,3 +292,12 @@ import { sha256 } from '@noble/hashes/sha2.js';
 export function hashStatement(stmt: Statement): string {
   return bytesToHex(sha256(serializeStatement(stmt)));
 }
+
+/**
+ * Compute SHA-256 hash of an already-serialized statement.
+ * Use this instead of hashStatement when the serialized bytes are already
+ * available to avoid redundant serialization.
+ */
+export function hashSerialized(serialized: Uint8Array): string {
+  return bytesToHex(sha256(serialized));
+}
