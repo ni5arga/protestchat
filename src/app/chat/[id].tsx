@@ -14,7 +14,7 @@
 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   KeyboardStickyView,
   useReanimatedKeyboardAnimation,
@@ -118,7 +118,31 @@ export default function ChatScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: t.bg }}>
-      <Stack.Screen options={{ title: info.title }} />
+      <Stack.Screen
+        options={{
+          title: info.title,
+          headerRight:
+            info.mode === 'direct' && contact
+              ? () => (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Rename ${contact.name}`}
+                    hitSlop={16}
+                    onPress={() => router.push(`/contact/${encodeURIComponent(conversationId)}`)}>
+                    {({ pressed }) => (
+                      <Text
+                        style={[
+                          Type.calloutStrong,
+                          { color: t.accent, opacity: pressed ? 0.6 : 1 },
+                        ]}>
+                        Edit
+                      </Text>
+                    )}
+                  </Pressable>
+                )
+              : undefined,
+        }}
+      />
 
       <ModeNotice
         info={info}

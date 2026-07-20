@@ -15,7 +15,7 @@
 
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Clipboard from 'expo-clipboard';
-import { useRouter } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import {
   Pressable,
@@ -30,35 +30,127 @@ import { Button, Card, Field, Input, Screen } from '@/components/ui';
 import { Radius, Spacing, TAP_TARGET, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useApp } from '@/lib/app-state';
-
-/** Namespaced so a random QR code in the wild cannot be mistaken for a contact. */
-const QR_PREFIX = 'protestchat:';
+import {
+  CONTACT_CODE_PREFIX,
+  MAX_CONTACT_NAME_LENGTH,
+  cleanContactName,
+  publicIdFromContactCode,
+} from '@/lib/contact';
 
 export default function AddScreen() {
   const t = useTheme();
   const router = useRouter();
   const { width } = useWindowDimensions();
-  const { identity, displayName, addContact } = useApp();
+  const { identity, displayName, contacts, addContact } = useApp();
 
   const [mode, setMode] = useState<'show' | 'scan'>('show');
   const [permission, requestPermission] = useCameraPermissions();
   const [typed, setTyped] = useState('');
+  const [pendingPublicId, setPendingPublicId] = useState<string | null>(null);
+  const [contactName, setContactName] = useState('');
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const handled = useRef(false);
 
-  const myCode = identity ? `${QR_PREFIX}${identity.publicId}` : '';
+  const myCode = identity ? `${CONTACT_CODE_PREFIX}${identity.publicId}` : '';
   const qrSize = Math.min(width - Spacing.lg * 2 - Spacing.xl * 2, 268);
 
-  const accept = async (raw: string) => {
-    const value = raw.trim().replace(QR_PREFIX, '');
-    const ok = await addContact(value);
-    if (!ok) {
+  const accept = (raw: string) => {
+    const publicId = publicIdFromContactCode(raw);
+    if (!publicId) {
       setError('That is not a valid contact code.');
       handled.current = false;
       return;
     }
-    router.back();
+    const existing = contacts.find((contact) => contact.publicId === publicId);
+    setPendingPublicId(publicId);
+    setContactName(existing?.name ?? '');
+    setError(null);
   };
+
+  const save = async () => {
+    if (!pendingPublicId || saving) return;
+    const chosen = cleanContactName(contactName);
+    if (!chosen) {
+      setError('Give this person a name you will recognise.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const ok = await addContact(pendingPublicId, chosen);
+      if (!ok) {
+        setError('That contact code is no longer valid.');
+        setSaving(false);
+        return;
+      }
+      router.back();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save this person.');
+      setSaving(false);
+    }
+  };
+
+  if (pendingPublicId) {
+    const existing = contacts.some((contact) => contact.publicId === pendingPublicId);
+    return (
+      <Screen contentStyle={{ gap: Spacing.xl }}>
+        <Stack.Screen options={{ title: existing ? 'Rename person' : 'Name this person' }} />
+
+        <Text style={[Type.body, { color: t.textMuted }]}>
+          Choose a name you will recognise later. It stays only on this phone and is never sent to
+          them or anyone nearby.
+        </Text>
+
+        <Card style={{ gap: Spacing.lg }}>
+          <Field
+            label="Name on this phone"
+            hint="Use a nickname or role, not necessarily a real name.">
+            <Input
+              value={contactName}
+              onChangeText={(value) => {
+                setContactName(value);
+                setError(null);
+              }}
+              accessibilityLabel="Name on this phone"
+              placeholder="Medic at north gate"
+              autoCapitalize="words"
+              maxLength={MAX_CONTACT_NAME_LENGTH}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={() => void save()}
+            />
+          </Field>
+          {!!error && (
+            <Text
+              selectable
+              accessibilityRole="alert"
+              style={[Type.callout, { color: t.tone.danger.fg }]}>
+              {error}
+            </Text>
+          )}
+          <Button
+            title={saving ? 'Saving…' : existing ? 'Save new name' : 'Save person'}
+            onPress={() => void save()}
+            disabled={!cleanContactName(contactName) || saving}
+          />
+        </Card>
+
+        <Button
+          title="Use a different code"
+          variant="quiet"
+          disabled={saving}
+          onPress={() => {
+            setPendingPublicId(null);
+            setContactName('');
+            setTyped('');
+            setError(null);
+            handled.current = false;
+          }}
+        />
+      </Screen>
+    );
+  }
 
   return (
     <Screen contentStyle={{ gap: Spacing.xl }}>
@@ -113,9 +205,9 @@ export default function AddScreen() {
                   onBarcodeScanned={({ data }) => {
                     // The camera fires continuously; without this latch a single
                     // code adds the same contact dozens of times.
-                    if (handled.current || !data.startsWith(QR_PREFIX)) return;
+                    if (handled.current || !data.startsWith(CONTACT_CODE_PREFIX)) return;
                     handled.current = true;
-                    void accept(data);
+                    accept(data);
                   }}
                 />
                 <Corners color={t.accent} />
@@ -153,6 +245,7 @@ export default function AddScreen() {
               setError(null);
             }}
             placeholder="protestchat:…"
+            accessibilityLabel="Paste their contact code"
             multiline
             style={{ minHeight: 84 }}
           />
@@ -165,7 +258,7 @@ export default function AddScreen() {
         <Button
           title="Add person"
           variant="secondary"
-          onPress={() => void accept(typed)}
+          onPress={() => accept(typed)}
           disabled={!typed.trim()}
         />
       </Card>

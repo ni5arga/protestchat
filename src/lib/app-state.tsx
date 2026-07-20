@@ -19,6 +19,8 @@ import {
 import { AppState } from 'react-native';
 
 import { RadioAccessGate } from '@/components/radio-access-gate';
+
+import { cleanContactName } from './contact';
 import type { Identity, PublicIdentity } from './crypto';
 import {
   PUBLIC_CHANNEL_KEY,
@@ -65,6 +67,7 @@ type AppContextValue = {
   createGroup: (name: string, memberPublicIds: string[]) => Promise<void>;
   deleteGroup: (id: string) => Promise<void>;
   addContact: (publicId: string, name?: string) => Promise<boolean>;
+  renameContact: (publicId: string, name: string) => Promise<void>;
   verifyContact: (publicId: string, verified: boolean) => Promise<void>;
   safetyNumberFor: (publicId: string) => string | null;
 
@@ -246,13 +249,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (publicId: string, name?: string) => {
       const parsed = parsePublicId(publicId.trim());
       if (!parsed) return false;
-      const chosen = name?.trim();
+      const chosen = name ? cleanContactName(name) : null;
       await db.upsertContact(parsed.publicId, chosen || shortName(parsed.publicId));
       // upsertContact deliberately will not overwrite an existing name, so a
       // deliberate rename needs the explicit path.
       if (chosen) await db.setContactName(parsed.publicId, chosen);
       await refresh();
       return true;
+    },
+    [refresh],
+  );
+
+  const renameContact = useCallback(
+    async (publicId: string, name: string) => {
+      const chosen = cleanContactName(name);
+      if (!chosen) throw new Error('Give this person a name.');
+      if (!(await db.getContact(publicId))) {
+        throw new Error('That person is no longer on this phone.');
+      }
+      await db.setContactName(publicId, chosen);
+      await refresh();
     },
     [refresh],
   );
@@ -312,6 +328,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createGroup,
       deleteGroup,
       addContact,
+      renameContact,
       verifyContact,
       safetyNumberFor,
       panicWipe,
@@ -335,6 +352,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createGroup,
       deleteGroup,
       addContact,
+      renameContact,
       verifyContact,
       safetyNumberFor,
       panicWipe,

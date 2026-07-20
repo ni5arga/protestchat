@@ -43,6 +43,7 @@ export default function RootLayout() {
               thing on the screen rather than the second. */}
           <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="chat/[id]" options={{ title: '' }} />
+          <Stack.Screen name="contact/[id]" options={{ title: 'Edit person' }} />
           <Stack.Screen
             name="add"
             options={{ title: 'Add a person', presentation: 'modal', animation: 'slide_from_bottom' }}
