@@ -88,6 +88,15 @@ export interface MeshStore {
   upsertContact(publicId: string, name: string): Promise<void>;
 
   /**
+   * True only for a contact the user deliberately added (scanned or pasted a
+   * code). The engine auto-files every sender it hears from, so mere existence
+   * in the contact table is not a relationship — this is. It gates delivery
+   * receipts: acking a sender the user never chose to talk to hands an
+   * uninvited stranger a signed, timestamped proof this device is live.
+   */
+  isAddedContact(publicId: string): Promise<boolean>;
+
+  /**
    * Records who an outgoing message is expected to be acknowledged by.
    *
    * This is the ledger delivery receipts are checked against, and it is what
@@ -133,9 +142,11 @@ type StoredEnvelope = {
  */
 export interface MemoryStore extends MeshStore {
   readonly messages: Message[];
-  readonly contacts: { publicId: string; name: string }[];
+  readonly contacts: { publicId: string; name: string; added: boolean }[];
   readonly envelopes: StoredEnvelope[];
   readonly seen: string[];
+  /** Test-only: stand in for the user deliberately adding this person. */
+  markContactAdded(publicId: string): void;
 }
 
 export function createMemoryStore(now: () => number = Date.now): MemoryStore {
@@ -148,7 +159,7 @@ export function createMemoryStore(now: () => number = Date.now): MemoryStore {
    * drift, the tests are testing a fiction.
    */
   const messageFirstSeen = new Map<string, number>();
-  const contacts = new Map<string, { publicId: string; name: string }>();
+  const contacts = new Map<string, { publicId: string; name: string; added: boolean }>();
   const seen = new Map<string, number>();
   const seenMessages = new Map<string, number>();
   /**
@@ -271,7 +282,18 @@ export function createMemoryStore(now: () => number = Date.now): MemoryStore {
     async upsertContact(publicId, name) {
       // Mirrors db.ts: first write wins on the name, so a label the user chose
       // survives the engine calling this on every message from that person.
-      if (!contacts.has(publicId)) contacts.set(publicId, { publicId, name });
+      // Auto-file never sets added — only a deliberate add does.
+      if (!contacts.has(publicId)) contacts.set(publicId, { publicId, name, added: false });
+    },
+
+    async isAddedContact(publicId) {
+      return contacts.get(publicId)?.added ?? false;
+    },
+
+    markContactAdded(publicId) {
+      const existing = contacts.get(publicId);
+      if (existing) existing.added = true;
+      else contacts.set(publicId, { publicId, name: `anon-${publicId.slice(0, 6)}`, added: true });
     },
 
     get messages() {

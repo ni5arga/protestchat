@@ -254,6 +254,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (name: string, passphrase: string) => {
       const id = normaliseChannelName(name);
       if (!id) throw new Error('Give the channel a name.');
+      // "public" is the everyone-nearby broadcast, always present with a fixed
+      // key. Letting it be joined as a passphrase channel would collide on the
+      // same row and silently rekey the broadcast, breaking it for everyone who
+      // followed the same word-of-mouth instruction.
+      if (id === PUBLIC_CHANNEL_NAME) {
+        throw new Error(
+          '“public” is the everyone-nearby broadcast — it is always on and open to anyone. Pick a different name for a private channel.',
+        );
+      }
       if (!passphrase) throw new Error('A channel needs a passphrase.');
 
       const key = deriveChannelKey(id, passphrase);
@@ -298,6 +307,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         parsed.identity.publicId,
         chosen || shortName(parsed.identity.publicId),
       );
+      // Mark this as a person the user deliberately added, not one auto-filed
+      // from received traffic. Only added contacts get delivery receipts, so
+      // that acking never leaks our presence to an unaffiliated sender.
+      await db.markContactAdded(parsed.identity.publicId);
       // upsertContact deliberately will not overwrite an existing name, so a
       // deliberate rename needs the explicit path.
       if (chosen) await db.setContactName(parsed.identity.publicId, chosen);

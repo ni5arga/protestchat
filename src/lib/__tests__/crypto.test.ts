@@ -15,7 +15,9 @@ import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { toUtf8 } from '../bytes';
 import {
   PUBLIC_CHANNEL_KEY,
+  PUBLIC_CHANNEL_NAME,
   deriveChannelKey,
+  isPublicChannelName,
   identityFromSeed,
   open,
   openWithKey,
@@ -225,6 +227,20 @@ describe('channels', () => {
   it('is opaque without the key', () => {
     const wrong = deriveChannelKey('gate4', 'guessed-wrong');
     assert.equal(openWithKey(wrong, sealToKey(alice, key, toUtf8('hi'))), null);
+  });
+
+  it('recognises every spelling of the reserved public channel', () => {
+    // All of these normalise onto the public-broadcast row, so joining any of
+    // them as a passphrase channel would silently rekey the everyone-nearby
+    // broadcast. joinChannel refuses them via this predicate.
+    for (const spelling of ['public', 'Public', 'PUBLIC', '#public', '  public  ']) {
+      assert.equal(isPublicChannelName(spelling), true, `should reserve "${spelling}"`);
+    }
+    assert.equal(isPublicChannelName(PUBLIC_CHANNEL_NAME), true);
+    // A name that merely contains it is a real, joinable channel.
+    for (const ok of ['publications', 'public-square', 'the-public']) {
+      assert.equal(isPublicChannelName(ok), false, `should allow "${ok}"`);
+    }
   });
 
   it('rejects tampering', () => {

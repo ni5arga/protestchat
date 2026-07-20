@@ -577,6 +577,19 @@ export const PUBLIC_CHANNEL_KEY: Uint8Array = hkdf(
 export const PUBLIC_CHANNEL_NAME = 'public';
 
 /**
+ * True if `name` refers to the reserved public-broadcast channel.
+ *
+ * The public row is a fixed, hardcoded key. A passphrase channel that
+ * normalises to the same id ("public", "Public", "#public", " public ") would
+ * collide with it and, via upsertChannel's ON CONFLICT, silently rekey the
+ * everyone-nearby broadcast to a passphrase key — breaking the one mode whose
+ * whole purpose is reaching strangers, with no change to the UI. So joining
+ * this name is refused.
+ */
+export const isPublicChannelName = (name: string): boolean =>
+  normaliseChannelName(name) === PUBLIC_CHANNEL_NAME;
+
+/**
  * Seals `body` to a symmetric key, authenticated as `sender`.
  *
  * Used for both channels and public broadcast. Authorship is verifiable by
