@@ -8,6 +8,7 @@ import { describe, it } from 'node:test';
 import { toUtf8 } from '../bytes';
 import { decodeContactCode, encodeContactCode } from '../contact-code';
 import {
+  generateReceiveKey,
   identityFromSeed,
   isForwardSecretAgreement,
   open,
@@ -16,7 +17,6 @@ import {
 } from '../crypto-core';
 import {
   LocalPrekeys,
-  OPEN_SECRET_CAP,
   OTK_POOL_CEILING,
   PeerPrekeyBook,
   QR_OTK_COUNT,
@@ -199,15 +199,36 @@ describe('per-message FS via OTK', () => {
     }
   });
 
-  it('caps trial-open secrets and the OTK pool', () => {
+  it('caps OTK trial-open secrets but keeps the full SPK ring (#50)', () => {
+    const now = Date.now();
+    const spks = Array.from({ length: 6 }, (_, i) => generateReceiveKey(now - i * 3_600_000));
+    const otks = Array.from({ length: OTK_POOL_CEILING }, () => ({
+      ...generateReceiveKey(now),
+      issuedTo: null as string | null,
+    }));
+
+    const bobLocal = new LocalPrekeys();
+    bobLocal.load(spks, otks);
+
+    const secrets = bobLocal.secretsForOpen();
+    // Known full pool: every OTK (under the walk cap) plus every retained SPK.
+    assert.equal(secrets.length, OTK_POOL_CEILING + spks.length);
+
+    const oldSpk = spks[spks.length - 1]!;
+    const sealed = seal(alice, pub(bob), toUtf8('in-flight'), oldSpk.public);
+    assert.ok(
+      open(bob, sealed, secrets),
+      'aged SPK must open even behind a full OTK pool',
+    );
+  });
+
+  it('caps the OTK pool ceiling', () => {
     const local = new LocalPrekeys();
     local.ensureReady();
-    // Mint well past the ceiling via per-peer issuance.
     for (let i = 0; i < 8; i++) {
       local.updateForPeer(bob, `peer-${i}`, 8);
     }
     assert.ok(local.snapshot().otks.length <= OTK_POOL_CEILING);
-    assert.ok(local.secretsForOpen().length <= OPEN_SECRET_CAP);
   });
 });
 
