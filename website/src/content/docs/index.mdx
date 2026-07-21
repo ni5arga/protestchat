@@ -1,0 +1,55 @@
+---
+title: Start here
+description: What protestchat is, who it is for, and what it will not protect you from.
+template: splash
+hero:
+  title: protestchat
+  tagline: Phones talk to each other over Bluetooth when the internet and cell network are gone.
+  actions:
+    - text: Get running in 5 minutes
+      link: /get-started/
+      icon: right-arrow
+      variant: primary
+    - text: What this will not do
+      link: /limits/
+      icon: warning
+      variant: minimal
+---
+
+import { Card, CardGrid, Aside } from '@astrojs/starlight/components';
+
+<Aside type="danger" title="Read this first">
+protestchat is **pre-alpha and unaudited**. Do not rely on it as your only way to stay safe. Prefer tools and habits you already trust. Only install a build you compiled yourself, or one from a source you have reason to trust.
+</Aside>
+
+## What it is
+
+Encrypted messaging with **no internet, no cell tower, and no server**. Nearby phones carry messages for each other over Bluetooth. If someone walks out of a jammed area with the app open, they can carry queued messages with them.
+
+## What you need
+
+- Two phones (Android is the practical path today; iOS is experimental)
+- Bluetooth on
+- The app kept **on screen** while you need it to send, receive, or relay
+- Someone to meet **in person** once to exchange contact codes
+
+## Jump to
+
+<CardGrid>
+  <Card title="Get running" icon="rocket">
+    [Install and send your first message](/get-started/)
+  </Card>
+  <Card title="Four modes" icon="document">
+    [Who can read what — choose carefully](/modes/)
+  </Card>
+  <Card title="Your job" icon="approve-check">
+    [Verify, wipe, do’s and don’ts](/responsibility/)
+  </Card>
+  <Card title="Limits" icon="warning">
+    [Honest gaps and risks](/limits/)
+  </Card>
+</CardGrid>
+
+## Builders
+
+Source, threat model, and contribution notes live on [GitHub](https://github.com/ni5arga/protestchat). This site is for people who need to **use** the app.

@@ -8,6 +8,8 @@
 
 Off-grid messaging for internet shutdowns and jammed protests. Phones talk directly to each other over Bluetooth — no cell tower, no ISP, no server, no account.
 
+**Using the app?** Start with the plain-language guide in [`website/`](website/) (Astro Starlight). Hosting the public URL is tracked in [#61](https://github.com/ni5arga/protestchat/issues/61).
+
 Built after Delhi Police deployed portable cellular jammers at Jantar Mantar on 20 July 2026 alongside an unpublished mobile internet restriction. **Those jammers target 3G/4G/5G only.** 2.4 GHz is untouched, so two phones standing next to each other were still perfectly capable of talking — there was just no user-friendly & acessible app to do it.
 
 ## How it works
