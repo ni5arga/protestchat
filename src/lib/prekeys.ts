@@ -154,15 +154,18 @@ export class LocalPrekeys {
    */
   bundleForQr(owner: Identity, _count = QR_OTK_COUNT): PrekeyBundle {
     this.ensureReady();
-    const signed = signReceiveKey(owner, this.spk[0]!);
-    return { signed, oneTimePublics: [] };
+    const oneTimePublics: Uint8Array[] = [];
+    const signed = signReceiveKey(owner, this.spk[0]!, oneTimePublics);
+    return { signed, oneTimePublics };
   }
 
   /** In-band replenishment dedicated to one peer. */
   updateForPeer(owner: Identity, peerPublicId: string, count = REPLENISH_OTK_COUNT): PrekeyBundle {
     this.ensureReady();
-    const signed = signReceiveKey(owner, this.spk[0]!);
-    return { signed, oneTimePublics: this.issueOtks(peerPublicId, count) };
+    const oneTimePublics = this.issueOtks(peerPublicId, count);
+    // Sign AFTER issuing so the signature binds this exact OTK list (#48).
+    const signed = signReceiveKey(owner, this.spk[0]!, oneTimePublics);
+    return { signed, oneTimePublics };
   }
 
   toWire(bundle: PrekeyBundle): PrekeyUpdateWire {
@@ -253,11 +256,11 @@ export class PeerPrekeyBook {
   }
 
   /**
-   * Merge a verified bundle from `owner`. Invalid SPK signatures are ignored
-   * entirely (do not partially trust OTKs from an unverified update).
+   * Merge a verified bundle from `owner`. The signature must bind the SPK and
+   * the exact OTK list — substituted OTKs fail verification (#48).
    */
   absorb(owner: PublicIdentity, bundle: PrekeyBundle): boolean {
-    if (!verifyReceiveKey(owner, bundle.signed)) return false;
+    if (!verifyReceiveKey(owner, bundle.signed, bundle.oneTimePublics)) return false;
     let row = this.peers.get(owner.publicId);
     if (!row) {
       row = { spk: null, otks: [] };

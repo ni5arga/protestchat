@@ -71,6 +71,31 @@ describe('prekey bundles', () => {
     const code = encodeContactCode(bob.publicId, bundle);
     assert.equal(decodeContactCode(code), null);
   });
+
+  it('rejects substituted OTKs under a valid SPK signature (#48)', () => {
+    const bobLocal = new LocalPrekeys();
+    bobLocal.ensureReady();
+    const honest = bobLocal.updateForPeer(bob, alice.publicId, 1);
+
+    const eveLocal = new LocalPrekeys();
+    eveLocal.ensureReady();
+    const eveOtk = eveLocal.updateForPeer(eve, alice.publicId, 1).oneTimePublics[0]!;
+    const forged = { signed: honest.signed, oneTimePublics: [eveOtk] };
+
+    assert.equal(verifyReceiveKey(pub(bob), honest.signed, honest.oneTimePublics), true);
+    assert.equal(verifyReceiveKey(pub(bob), forged.signed, forged.oneTimePublics), false);
+
+    const book = new PeerPrekeyBook();
+    assert.equal(book.absorb(pub(bob), forged), false);
+
+    // Control: honest bundle absorbs and seals to Bob, not Eve.
+    assert.equal(book.absorb(pub(bob), honest), true);
+    const { public: agreement, kind } = book.takeAgreementPublic(pub(bob));
+    assert.equal(kind, 'otk');
+    const sealed = seal(alice, pub(bob), toUtf8('for-bob'), agreement);
+    assert.ok(open(bob, sealed, bobLocal.secretsForOpen()));
+    assert.equal(open(eve, sealed, eveLocal.secretsForOpen()), null);
+  });
 });
 
 describe('per-message FS via OTK', () => {

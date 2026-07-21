@@ -38,7 +38,7 @@ Wire layout of sealed payloads is unchanged (relays still cannot tell modes apar
 | Same QR scanned by two people | SPK only on QR — both deliver; OTKs are exclusive in-band |
 | In-flight after SPK rotation | SPK ring retained 6h |
 | Trial-decrypt cost | OTK pool ceiling (24) + `OPEN_SECRET_CAP` (28); newest-first |
-| Forged prekeys | SPK signature required; bad bundles rejected |
+| Forged prekeys | Signature binds SPK **and** the exact OTK list; substituted OTKs fail verify |
 
 ## Trial-decrypt cost
 

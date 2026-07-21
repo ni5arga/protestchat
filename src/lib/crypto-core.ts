@@ -342,36 +342,88 @@ export function generateReceiveKey(now = Date.now()): ReceiveKey {
   return { secret, public: x25519.getPublicKey(secret), createdAt: now };
 }
 
-/** Sign a receive public key so peers can bind it to an identity at intro. */
-export function signReceiveKey(owner: Identity, key: ReceiveKey): SignedReceiveKey {
-  const signature = ed25519.sign(receiveKeyTranscript(key.public, key.createdAt), owner.edSecret);
+/**
+ * Sign a receive public key (and any accompanying one-time publics) so peers
+ * can bind the whole prekey bundle to an identity.
+ *
+ * OTKs MUST be covered by this signature. Verifying the SPK alone and then
+ * trusting an attacker-supplied OTK list lets Eve decrypt mail Alice sealed
+ * "to Bob" (issue #48).
+ */
+export function signReceiveKey(
+  owner: Identity,
+  key: ReceiveKey,
+  oneTimePublics: readonly Uint8Array[] = [],
+): SignedReceiveKey {
+  const signature = ed25519.sign(
+    receiveKeyTranscript(key.public, key.createdAt, oneTimePublics),
+    owner.edSecret,
+  );
   return { public: key.public, createdAt: key.createdAt, signature };
 }
 
-export function verifyReceiveKey(owner: PublicIdentity, signed: SignedReceiveKey): boolean {
+/**
+ * Verify a signed receive key. When `oneTimePublics` is non-empty, the
+ * signature must bind those exact OTK publics — substituted OTKs fail.
+ *
+ * Empty OTK list: accept the current transcript (count=0) or a legacy
+ * SPK-only transcript from pre-#48 QR plaques.
+ */
+export function verifyReceiveKey(
+  owner: PublicIdentity,
+  signed: SignedReceiveKey,
+  oneTimePublics: readonly Uint8Array[] = [],
+): boolean {
   if (signed.public.length !== X_LEN || signed.signature.length !== SIG_LEN) return false;
   if (!Number.isFinite(signed.createdAt) || signed.createdAt <= 0) return false;
+  for (const p of oneTimePublics) {
+    if (p.length !== X_LEN) return false;
+  }
   try {
-    return ed25519.verify(
-      signed.signature,
-      receiveKeyTranscript(signed.public, signed.createdAt),
-      owner.edPublic,
-    );
+    const bound = receiveKeyTranscript(signed.public, signed.createdAt, oneTimePublics);
+    if (ed25519.verify(signed.signature, bound, owner.edPublic)) return true;
+    // Legacy QR / SPK-only signatures (no OTK binding). Never accept this path
+    // when OTKs are present — that would reintroduce unsigned-OTK redirect.
+    if (oneTimePublics.length === 0) {
+      return ed25519.verify(
+        signed.signature,
+        receiveKeyTranscriptLegacy(signed.public, signed.createdAt),
+        owner.edPublic,
+      );
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
-function receiveKeyTranscript(publicKey: Uint8Array, createdAt: number): Uint8Array {
+function receiveKeyTimestamp(createdAt: number): Uint8Array {
   // 64-bit createdAt so the signature cannot be replayed across rotations with
   // the same public (which should not happen with honest CSPRNG, but bind it).
   const ts = new Uint8Array(8);
   const view = new DataView(ts.buffer);
-  const hi = Math.floor(createdAt / 0x100000000);
-  const lo = createdAt >>> 0;
-  view.setUint32(0, hi);
-  view.setUint32(4, lo);
-  return concat(SIG_CONTEXT_RECV, publicKey, ts);
+  view.setUint32(0, Math.floor(createdAt / 0x100000000));
+  view.setUint32(4, createdAt >>> 0);
+  return ts;
+}
+
+/** Current transcript: SPK || createdAt || u16be(n) || OTK×n. */
+function receiveKeyTranscript(
+  publicKey: Uint8Array,
+  createdAt: number,
+  oneTimePublics: readonly Uint8Array[],
+): Uint8Array {
+  const n = oneTimePublics.length;
+  if (n > 0xffff) throw new Error('too many one-time prekeys to sign');
+  const count = new Uint8Array(2);
+  count[0] = (n >> 8) & 0xff;
+  count[1] = n & 0xff;
+  return concat(SIG_CONTEXT_RECV, publicKey, receiveKeyTimestamp(createdAt), count, ...oneTimePublics);
+}
+
+/** Pre-#48 transcript: SPK || createdAt only. */
+function receiveKeyTranscriptLegacy(publicKey: Uint8Array, createdAt: number): Uint8Array {
+  return concat(SIG_CONTEXT_RECV, publicKey, receiveKeyTimestamp(createdAt));
 }
 
 /** Compact encoding for QR / paste: public(32) || createdAt_be64 || sig(64). */

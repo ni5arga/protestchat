@@ -53,7 +53,7 @@ export function decodeContactCode(raw: string): ContactCode | null {
     const identity = parsePublicId(publicId);
     if (!identity) return null;
     const bundle = decodeBundle(keyPart);
-    if (!bundle || !verifyReceiveKey(identity, bundle.signed)) return null;
+    if (!bundle || !verifyReceiveKey(identity, bundle.signed, bundle.oneTimePublics)) return null;
     return { identity, bundle };
   }
 
