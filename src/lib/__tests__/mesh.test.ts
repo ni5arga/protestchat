@@ -410,6 +410,42 @@ describe('dedup', () => {
       assert.equal(inbox(C).length, 1, 'replay was delivered as a duplicate');
     }));
 
+  it('does not re-admit a re-wrapped ciphertext into the carry cache', () =>
+    scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
+      // A → B → C; B cannot open the mail and is the carry-cache surface (#54).
+      world.connect('A', 'B');
+      world.connect('B', 'C');
+      await world.settle();
+
+      await A.engine.sendText(C.pub, 'do not extend my lease');
+      await world.settle();
+
+      assert.equal(inbox(C).length, 1);
+      const carryBefore = B.store.envelopes.length;
+      assert.ok(carryBefore >= 1, 'relay never stored the original');
+
+      const original = A.transport.sent
+        .map((s) => decodeEnvelope(fromBase64(s.payloadBase64)))
+        .find((e): e is Envelope => !!e && e.type === EnvelopeType.Sealed && e.payload.length > 200);
+      assert.ok(original, 'no sealed message captured');
+
+      // Fresh id, hopCount reset, fresh createdAt — the residual of #3 that
+      // content-hash delivery dedup does not stop at a blind relay.
+      const rewrap = encodeEnvelope({
+        ...original,
+        id: fromBase64(randomId()),
+        hopCount: 0,
+        createdAt: Date.now(),
+      });
+      const forwardedBefore = relayed(B).length;
+      world.transport('B').fire('payload', 'A', toBase64(rewrap));
+      await world.settle();
+
+      assert.equal(B.store.envelopes.length, carryBefore, 're-wrap re-entered carry cache');
+      assert.equal(relayed(B).length, forwardedBefore, 're-wrap was forwarded again');
+      assert.equal(inbox(C).length, 1);
+    }));
+
   it('serves each envelope to a peer once, so a repeated request is not an amplifier', () =>
     scenario(['A', 'B', 'C'], async ({ A, B, C }, world) => {
       // A is carrying one envelope: its own message queued for an absent C.

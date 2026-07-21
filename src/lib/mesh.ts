@@ -491,6 +491,9 @@ export class MeshEngine {
     // between injection and transmission.
     await this.store.storeEnvelope(envelope, true);
     await this.store.markSeen(toBase64(envelope.id));
+    // Record the opaque ciphertext so a re-wrap of this payload cannot re-enter
+    // our carry cache with a reset hop/TTL if it comes back via a peer (#54).
+    await this.store.markMessageSeen(sealedPayloadKey(sealed));
     await this.refreshCarrying();
 
     if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
@@ -535,6 +538,14 @@ export class MeshEngine {
 
   private async handleSealed(fromPeerId: string, envelope: Envelope): Promise<void> {
     const idB64 = toBase64(envelope.id);
+
+    // Opaque ciphertext admit-once. Envelope-id dedup alone is defeated by
+    // re-wrapping the same sealed payload under a fresh id with hopCount=0 and
+    // a new createdAt — that resets epidemic hop budget and the first-sight
+    // retention lease. Content-hash dedup (#3) stops duplicate *delivery* after
+    // open; this gate stops relays from storing/forwarding the re-wrap at all (#54).
+    // Prefixed so it does not collide with decrypted content hashes below.
+    if (!(await this.store.markMessageSeen(sealedPayloadKey(envelope.payload)))) return;
 
     // Dedup before anything expensive. In a dense crowd the same envelope
     // arrives from many directions and trial decryption is not free.
@@ -816,6 +827,11 @@ export class MeshEngine {
 }
 
 // ---------------------------------------------------------------------------
+
+/** Ledger key for opaque sealed ciphertext; prefix avoids colliding with content hashes. */
+function sealedPayloadKey(payload: Uint8Array): string {
+  return `payload:${toBase64(sha256(payload))}`;
+}
 
 function parseIdList(payload: Uint8Array): string[] | null {
   try {
