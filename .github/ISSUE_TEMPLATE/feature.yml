@@ -1,0 +1,24 @@
+name: Feature or improvement
+description: A concrete change that is not a security report
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change? Keep it small if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: threats
+    attributes:
+      label: Safety notes
+      description: Could this confuse mode choice, weaken privacy, or contradict the threat model?

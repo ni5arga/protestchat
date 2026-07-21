@@ -1,0 +1,33 @@
+name: Bug report
+description: Something broken or incorrect in the app, mesh, or build
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this could put users at risk in the field (crypto, identity spoofing, wipe, relay abuse), use [SECURITY.md](https://github.com/ni5arga/protestchat/blob/main/SECURITY.md) instead of a public issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected vs what you got
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, platforms, build if known
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: Android 14 / iOS 18 / both / tests only
+  - type: textarea
+    id: notes
+    attributes:
+      label: Extra context
+      description: Logs, screenshots, related issues
