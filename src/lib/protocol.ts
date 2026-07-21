@@ -189,6 +189,44 @@ export type PrekeyUpdateWire = {
   otks: string[];
 };
 
+// ---------------------------------------------------------------------------
+// Emergency protocol types
+// ---------------------------------------------------------------------------
+
+/**
+ * The categories a user can choose when requesting emergency help.
+ *
+ * Kept as a small closed set — an open text field would allow unreviewed
+ * categories to appear on receiving devices, and a large category list
+ * slows down a user under stress. New categories require a deliberate code
+ * change, which is the right forcing function.
+ */
+export const EmergencyCategory = {
+  medical: 'medical',
+  unsafe: 'unsafe',
+  lostGroup: 'lost_group',
+  needHelp: 'need_help',
+} as const;
+export type EmergencyCategory = (typeof EmergencyCategory)[keyof typeof EmergencyCategory];
+
+const VALID_EMERGENCY_CATEGORIES: ReadonlySet<string> = new Set(
+  Object.values(EmergencyCategory),
+);
+
+/**
+ * Location sharing is opt-in and text-only in V1.
+ *
+ * GPS coordinates are deliberately absent from this type — a seized phone
+ * should not contain a movement history. A text label ("north gate",
+ * "near metro entrance") is useful to a rescuer but meaningless for
+ * retrospective location tracking.
+ *
+ * `none` is the default — a user who skips the location step sends nothing.
+ */
+export type EmergencyLocationLabel =
+  | { kind: 'none' }
+  | { kind: 'label'; text: string };
+
 export type MessageBody =
   /**
    * `id` is the SENDER's local message id, carried so the recipient has
@@ -207,7 +245,47 @@ export type MessageBody =
    * (per-message FS). Omitted on channel/public traffic.
    */
   | { kind: 'text'; text: string; sentAt: number; id?: string; prekeys?: PrekeyUpdateWire }
-  | { kind: 'receipt'; messageId: string; receivedAt: number; prekeys?: PrekeyUpdateWire };
+  | { kind: 'receipt'; messageId: string; receivedAt: number; prekeys?: PrekeyUpdateWire }
+  /**
+   * Emergency alert. Travels via the dedicated emergency broadcast key, never
+   * through the #public chat channel.
+   *
+   * `id` is a per-message dedup key, required here (unlike on text messages)
+   * because the emergency layer merges alerts by category+time-window and
+   * needs a stable key per sender-alert pair to avoid double-counting.
+   *
+   * `location` defaults to `{kind:'none'}` — the sender explicitly opts in
+   * to sharing even a text label. GPS coordinates are not present in V1.
+   *
+   * No `prekeys` field: emergency messages are broadcast to a symmetric key,
+   * not sealed to a specific identity, so per-message forward secrecy does
+   * not apply (same as channel messages).
+   */
+  | {
+      kind: 'emergency';
+      category: EmergencyCategory;
+      urgency: 'high';
+      location: EmergencyLocationLabel;
+      sentAt: number;
+      id: string;
+    }
+  /**
+   * Safety heartbeat. A voluntary "I am okay" signal sent after an incident.
+   *
+   * Distinct from `emergency` by design: a heartbeat travels via the same
+   * emergency channel key so it reaches the same audience, but the receiving
+   * UI treats it differently — it updates a "last known safe" display for
+   * known contacts rather than surfacing a help request.
+   *
+   * Only `state: 'safe'` exists in V1. A distressed state is expressed by
+   * sending an `emergency` message, never by a heartbeat variant.
+   */
+  | {
+      kind: 'heartbeat';
+      state: 'safe';
+      sentAt: number;
+      id: string;
+    };
 
 export const encodeBody = (b: MessageBody): string => JSON.stringify(b);
 
@@ -264,10 +342,81 @@ export function decodeBody(json: string): MessageBody | null {
         : { kind: 'receipt', messageId: parsed.messageId, receivedAt: parsed.receivedAt };
     }
 
+    // ---- Emergency protocol bodies ----------------------------------------
+    //
+    // Strict field-by-field reconstruction — same discipline as text/receipt.
+    // Extra fields on the parsed object are ignored; a missing required field
+    // returns null rather than producing a partial object that could confuse
+    // the application layer.
+
+    if (parsed?.kind === 'emergency') {
+      // All fields are required for emergency bodies — a partial emergency
+      // message is not safely handleable and must be dropped.
+      if (typeof parsed.id !== 'string') return null;
+      if (typeof parsed.sentAt !== 'number') return null;
+      if (parsed.urgency !== 'high') return null;
+      if (!VALID_EMERGENCY_CATEGORIES.has(parsed.category)) return null;
+
+      const location = parseLocation(parsed.location);
+      if (!location) return null;
+
+      return {
+        kind: 'emergency',
+        category: parsed.category as EmergencyCategory,
+        urgency: 'high',
+        location,
+        sentAt: parsed.sentAt,
+        id: parsed.id,
+      };
+    }
+
+    if (parsed?.kind === 'heartbeat') {
+      if (typeof parsed.id !== 'string') return null;
+      if (typeof parsed.sentAt !== 'number') return null;
+      // Only 'safe' is a valid heartbeat state in V1. Any other string is
+      // either a future version we don't understand or a malformed body.
+      if (parsed.state !== 'safe') return null;
+
+      return {
+        kind: 'heartbeat',
+        state: 'safe',
+        sentAt: parsed.sentAt,
+        id: parsed.id,
+      };
+    }
+
     return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Parses an EmergencyLocationLabel from an unknown value.
+ *
+ * Strict for the same reasons as parsePrekeys: the body is authenticated by
+ * the sender's key but the sender may not be honest. Rebuilds field by field.
+ */
+function parseLocation(raw: unknown): EmergencyLocationLabel | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const kind = (raw as { kind?: unknown }).kind;
+
+  if (kind === 'none') return { kind: 'none' };
+
+  if (kind === 'label') {
+    const text = (raw as { text?: unknown }).text;
+    if (typeof text !== 'string') return null;
+    // Clamp the label length — a 10,000-character location label is an attack.
+    if (text.length > 200) return null;
+    // Trim whitespace only — do not alter meaning.
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return null;
+    return { kind: 'label', text: trimmed };
+  }
+
+  // Unknown location kind (future version or attack). Treat as none so old
+  // versions of the app can still display the alert without the location.
+  return { kind: 'none' };
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +436,21 @@ export const DEFAULTS = {
    */
   maxHops: MAX_HOPS,
 } as const;
+
+/**
+ * Emergency messages expire much faster than normal messages.
+ *
+ * A "medical emergency" alert that is 4 hours old is not actionable — it is
+ * historical noise that could cause wrong decisions. 15 minutes is long enough
+ * for the alert to propagate across a large mesh and be acted on, but short
+ * enough that a seized phone does not contain a record of hours of emergency
+ * activity.
+ *
+ * Heartbeats use the same TTL: a "safe" check-in from 4 hours ago is not
+ * current status, it is history. The UI shows age, but expiry stops old data
+ * from accumulating indefinitely on relay devices.
+ */
+export const EMERGENCY_TTL_SECONDS = 15 * 60; // 15 minutes
 
 export const isExpired = (e: Envelope, now = Date.now()): boolean =>
   now > e.createdAt + e.ttlSeconds * 1000;
