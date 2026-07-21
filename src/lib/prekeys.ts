@@ -348,21 +348,18 @@ function signedSpkBytes(signed: SignedReceiveKey): Uint8Array {
   return concat(signed.public, ts, signed.signature);
 }
 
-/** Binary bundle for QR: ver(1) || spk(32+8+64) || n(u16) || otk*n. */
+/** Binary bundle for QR: ver(1) || spk(32+8+64) || n(u16)=0. OTKs are forbidden (#51). */
 export function encodeBundle(bundle: PrekeyBundle): string {
+  if (bundle.oneTimePublics.length !== 0) {
+    throw new Error('QR prekey bundles must be SPK-only');
+  }
   const spk = signedSpkBytes(bundle.signed);
-  const n = bundle.oneTimePublics.length;
-  const out = new Uint8Array(1 + spk.length + 2 + n * X_LEN);
+  const out = new Uint8Array(1 + spk.length + 2);
   out[0] = 1;
   out.set(spk, 1);
-  out[1 + spk.length] = (n >> 8) & 0xff;
-  out[1 + spk.length + 1] = n & 0xff;
-  let o = 1 + spk.length + 2;
-  for (const p of bundle.oneTimePublics) {
-    if (p.length !== X_LEN) throw new Error('otk public must be 32 bytes');
-    out.set(p, o);
-    o += X_LEN;
-  }
+  // n = 0 (explicit): parsers reject any other count.
+  out[1 + spk.length] = 0;
+  out[1 + spk.length + 1] = 0;
   return toBase64(out);
 }
 
@@ -375,16 +372,10 @@ export function decodeBundle(encoded: string): PrekeyBundle | null {
     const signed = decodeSignedSpk(toBase64(raw.subarray(1, 1 + spkLen)));
     if (!signed) return null;
     const n = (raw[1 + spkLen] << 8) | raw[1 + spkLen + 1];
-    if (n < 0 || n > 64) return null;
-    const need = 1 + spkLen + 2 + n * X_LEN;
-    if (raw.length !== need) return null;
-    const oneTimePublics: Uint8Array[] = [];
-    let o = 1 + spkLen + 2;
-    for (let i = 0; i < n; i++) {
-      oneTimePublics.push(raw.slice(o, o + X_LEN));
-      o += X_LEN;
-    }
-    return { signed, oneTimePublics };
+    // Wire rule, not just encoder policy: QR must not carry OTKs (#51).
+    if (n !== 0) return null;
+    if (raw.length !== 1 + spkLen + 2) return null;
+    return { signed, oneTimePublics: [] };
   } catch {
     return null;
   }

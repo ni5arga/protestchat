@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { toUtf8 } from '../bytes';
+import { concat, toBase64, toUtf8 } from '../bytes';
 import { decodeContactCode, encodeContactCode } from '../contact-code';
 import {
   identityFromSeed,
@@ -69,6 +69,39 @@ describe('prekey bundles', () => {
     const local = new LocalPrekeys();
     const bundle = local.bundleForQr(eve);
     const code = encodeContactCode(bob.publicId, bundle);
+    assert.equal(decodeContactCode(code), null);
+  });
+
+  it('rejects QR / contact codes that carry OTKs (#51)', () => {
+    const bobLocal = new LocalPrekeys();
+    bobLocal.ensureReady();
+    const withOtks = bobLocal.updateForPeer(bob, 'qr-evil', 3);
+    assert.equal(withOtks.oneTimePublics.length, 3);
+
+    // Encoder refuses to build a QR payload with OTKs.
+    assert.throws(() => encodeBundle(withOtks), /SPK-only/);
+
+    // Hand-craft a legacy-shaped payload with n=3; decoder must reject.
+    const spk = withOtks.signed;
+    const ts = new Uint8Array(8);
+    const view = new DataView(ts.buffer);
+    view.setUint32(0, Math.floor(spk.createdAt / 0x100000000));
+    view.setUint32(4, spk.createdAt >>> 0);
+    const spkBytes = concat(spk.public, ts, spk.signature);
+    const n = 3;
+    const raw = new Uint8Array(1 + spkBytes.length + 2 + n * 32);
+    raw[0] = 1;
+    raw.set(spkBytes, 1);
+    raw[1 + spkBytes.length] = 0;
+    raw[1 + spkBytes.length + 1] = n;
+    let o = 1 + spkBytes.length + 2;
+    for (const p of withOtks.oneTimePublics) {
+      raw.set(p, o);
+      o += 32;
+    }
+    assert.equal(decodeBundle(toBase64(raw)), null);
+
+    const code = `protestchat:v2:${bob.publicId}:${toBase64(raw)}`;
     assert.equal(decodeContactCode(code), null);
   });
 });

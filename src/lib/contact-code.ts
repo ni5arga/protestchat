@@ -4,10 +4,10 @@
  * v1: protestchat:<publicId>
  * v2: protestchat:v2:<publicId>:<prekeyBundle>
  *
- * v2 carries a signed prekey (SPK). One-time prekeys are deliberately omitted:
- * a QR can be scanned by many people, and consume-on-open OTKs would silently
- * drop every sealer after the first. First messages seal to the SPK; exclusive
- * OTKs arrive in-band on the first exchange.
+ * v2 carries a signed prekey (SPK) only. One-time prekeys are rejected on
+ * decode (#51): a QR can be scanned by many people, and consume-on-open OTKs
+ * would silently drop every sealer after the first. First messages seal to the
+ * SPK; exclusive OTKs arrive in-band on the first exchange.
  */
 
 import type { PublicIdentity } from './crypto-core';

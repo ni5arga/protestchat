@@ -35,7 +35,7 @@ Wire layout of sealed payloads is unchanged (relays still cannot tell modes apar
 | Pitfall | Handling |
 |--------|----------|
 | No key server | QR SPK + in-band OTK replenishment |
-| Same QR scanned by two people | SPK only on QR — both deliver; OTKs are exclusive in-band |
+| Same QR scanned by two people | SPK only on QR (encode + decode reject OTKs); exclusive OTKs in-band |
 | In-flight after SPK rotation | SPK ring retained 6h |
 | Trial-decrypt cost | OTK pool ceiling (24) + `OPEN_SECRET_CAP` (28); newest-first |
 | Forged prekeys | SPK signature required; bad bundles rejected |
