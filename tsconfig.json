@@ -8,5 +8,5 @@
     }
   },
   "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"],
-  "exclude": ["node_modules", "src/lib/__tests__", "src/trust/__tests__"]
+  "exclude": ["node_modules", "website", "src/lib/__tests__", "src/trust/__tests__"]
 }
