@@ -10,9 +10,10 @@
  *     multi-scan — advertising OTKs there caused silent loss when two people
  *     sealed to the same intro key. SPK delivers; exclusive OTKs follow.
  *
- * OTKs are issued per peer. Re-advertising the same OTK to two peers would let
- * the second sealer's ciphertext become unopenable after the first is consumed
- * — so issuance is tracked.
+ * OTKs are issued per peer. Once issued, an OTK is never re-advertised to that
+ * peer — re-listing a public the peer may already have taken would let two
+ * seals share one secret and the second ciphertext becomes undeliverable after
+ * consume (#49).
  */
 
 import { concat, fromBase64, toBase64 } from './bytes';
@@ -176,11 +177,9 @@ export class LocalPrekeys {
     this.fillPool();
     const out: Uint8Array[] = [];
 
-    // Re-share OTKs already issued to this peer that still exist (not consumed).
-    for (const o of this.otks.values()) {
-      if (out.length >= count) break;
-      if (o.issuedTo === issuedTo) out.push(Uint8Array.from(o.public));
-    }
+    // Never re-advertise OTKs already issued to this peer (#49). The peer may
+    // already have taken one from their book; re-listing it lets them seal
+    // twice to the same public, and the second message dies after consume.
 
     for (const o of this.otks.values()) {
       if (out.length >= count) break;

@@ -138,6 +138,34 @@ describe('per-message FS via OTK', () => {
     assert.notDeepEqual([...a.public], [...b.public]);
   });
 
+  it('does not re-advertise an issued OTK after the peer may have taken it (#49)', () => {
+    const bobLocal = new LocalPrekeys();
+    bobLocal.ensureReady();
+    const book = new PeerPrekeyBook();
+    book.absorb(pub(bob), bobLocal.updateForPeer(bob, alice.publicId, 1));
+
+    const first = book.takeAgreementPublic(pub(bob));
+    assert.equal(first.kind, 'otk');
+
+    book.absorb(pub(bob), bobLocal.updateForPeer(bob, alice.publicId, 1));
+    const second = book.takeAgreementPublic(pub(bob));
+    assert.equal(second.kind, 'otk');
+    assert.notDeepEqual(
+      [...first.public],
+      [...second.public],
+      'replenish must mint a fresh OTK, not re-list the taken one',
+    );
+
+    const sealed1 = seal(alice, pub(bob), toUtf8('m1'), first.public);
+    const sealed2 = seal(alice, pub(bob), toUtf8('m2'), second.public);
+    const o1 = open(bob, sealed1, bobLocal.secretsForOpen());
+    assert.ok(o1);
+    bobLocal.consumeOtk(o1.agreementPublic!);
+    const o2 = open(bob, sealed2, bobLocal.secretsForOpen());
+    assert.ok(o2, 'second seal must still open under its own OTK');
+    bobLocal.consumeOtk(o2.agreementPublic!);
+  });
+
   it('falls back to SPK then long-term when OTKs are exhausted', () => {
     const bobLocal = new LocalPrekeys();
     const bundle = bobLocal.updateForPeer(bob, alice.publicId, 1);
