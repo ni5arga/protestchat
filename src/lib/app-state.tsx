@@ -376,13 +376,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     await wipeStep('identity seed', () => destroyIdentity());
     await wipeStep('display name', () => SecureStore.deleteItemAsync(NAME_KEY));
+    // Drop live mesh secrets *before* the DB wipe and *before* awaiting
+    // transport.stop(). stop() can hang on wedged BLE; without this gate,
+    // sealed traffic arriving in that window can still open and file into a
+    // freshly wiped database (#55). dropSecrets is sync and never throws.
+    mesh.dropSecrets();
     await wipeStep('messages and keys', () => db.wipeEverything());
-    // A live radio keeps re-deriving state from the identity we just destroyed,
-    // so quiet it — but only after the durable secrets are gone, since stop()
-    // is the step most likely to hang on a wedged BLE stack.
+    // Quiet the radio last — most likely step to hang on a wedged BLE stack.
     await wipeStep('radio', () => mesh.stop());
 
-    // Drop in-memory secrets regardless of what threw above.
+    // Drop app-level in-memory secrets regardless of what threw above.
     identityRef.current = null;
     setIdentity(null);
     localPrekeysRef.current = new LocalPrekeys();

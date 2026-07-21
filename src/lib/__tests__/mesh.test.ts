@@ -261,6 +261,23 @@ describe('radio lifecycle', () => {
     assert.equal(engine.status().lastError, null);
     await engine.stop();
   });
+
+  it('dropSecrets blocks ingest without waiting for stop', () =>
+    scenario(['A', 'C'], async ({ A, C }, world) => {
+      world.connect('A', 'C');
+      await world.settle();
+
+      // Panic wipe clears live secrets before awaiting transport.stop(); sealed
+      // traffic in that window must not file into a wiped DB (#55).
+      C.engine.dropSecrets();
+
+      await A.engine.sendText(C.pub, 'should not land after wipe');
+      await world.settle();
+
+      assert.equal(inbox(C).length, 0);
+      assert.equal(C.store.envelopes.length, 0);
+      assert.equal(C.read.length, 0);
+    }));
 });
 
 describe('direct delivery', () => {
