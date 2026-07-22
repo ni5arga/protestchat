@@ -19,19 +19,32 @@ import { useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AlertFeed } from '@/components/alert-feed';
+import { EmergencyGrid } from '@/components/emergency-grid';
 import { StatusBanner } from '@/components/status-banner';
 import { Button, Card, Empty, Leading, List, Row, Screen, SectionHeader, Tag } from '@/components/ui';
 import { Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useI18n } from '@/i18n/provider';
-import { useApp } from '@/lib/app-state';
+import { EmergencyCategory, useApp } from '@/lib/app-state';
 
 export default function HomeScreen() {
   const t = useTheme();
   const { t: copy, plural } = useI18n();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { status, contacts, conversations, channels, groups, refresh, ready } = useApp();
+  const {
+    status,
+    contacts,
+    conversations,
+    channels,
+    groups,
+    refresh,
+    ready,
+    activeAlerts,
+    dismissAlert,
+    canSendEmergency,
+  } = useApp();
 
   useFocusEffect(
     useCallback(() => {
@@ -63,6 +76,22 @@ export default function HomeScreen() {
           )}
         </Pressable>
       </View>
+
+      <AlertFeed alerts={activeAlerts} onDismiss={dismissAlert} />
+
+      <SectionHeader title={copy('emergency.sectionTitle')} />
+      <EmergencyGrid
+        onAction={(action) => {
+          if (action.kind === 'heartbeat') {
+            router.push('/emergency/sos?category=heartbeat');
+          } else {
+            router.push(`/emergency/sos?category=${action.category}`);
+          }
+        }}
+        disabledCategories={Object.values(EmergencyCategory).filter(
+          (c) => !canSendEmergency(c),
+        )}
+      />
 
       <StatusBanner status={status} />
 
