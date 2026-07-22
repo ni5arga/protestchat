@@ -180,3 +180,152 @@ describe('message bodies', () => {
     }
   });
 });
+
+describe('emergency message body', () => {
+  const base = {
+    kind: 'emergency' as const,
+    category: 'medical' as const,
+    urgency: 'high' as const,
+    location: { kind: 'none' as const },
+    sentAt: 1_700_000_000_000,
+    id: 'abc123',
+  };
+
+  it('round-trips a minimal emergency body (no location)', () => {
+    assert.deepEqual(decodeBody(encodeBody(base)), base);
+  });
+
+  it('round-trips an emergency body with a location label', () => {
+    const body = { ...base, location: { kind: 'label' as const, text: 'north gate' } };
+    assert.deepEqual(decodeBody(encodeBody(body)), body);
+  });
+
+  it('round-trips all valid categories', () => {
+    for (const category of ['medical', 'unsafe', 'lost_group', 'need_help'] as const) {
+      const body = { ...base, category };
+      assert.equal(decodeBody(encodeBody(body))?.kind, 'emergency');
+    }
+  });
+
+  it('rejects an unknown category', () => {
+    assert.equal(
+      decodeBody(JSON.stringify({ ...base, category: 'protest' })),
+      null,
+    );
+  });
+
+  it('rejects urgency values other than high', () => {
+    // Only 'high' is a valid urgency in V1. A future version may add 'medium';
+    // old code must not accept it silently since the UI treats all decoded
+    // emergencies as high urgency.
+    assert.equal(
+      decodeBody(JSON.stringify({ ...base, urgency: 'medium' })),
+      null,
+    );
+    assert.equal(
+      decodeBody(JSON.stringify({ ...base, urgency: 'low' })),
+      null,
+    );
+  });
+
+  it('rejects a missing id', () => {
+    const { id: _removed, ...noId } = base;
+    assert.equal(decodeBody(JSON.stringify(noId)), null);
+  });
+
+  it('rejects a non-string id', () => {
+    assert.equal(decodeBody(JSON.stringify({ ...base, id: 99 })), null);
+  });
+
+  it('rejects a missing sentAt', () => {
+    const { sentAt: _removed, ...noSentAt } = base;
+    assert.equal(decodeBody(JSON.stringify(noSentAt)), null);
+  });
+
+  it('rejects a non-number sentAt', () => {
+    assert.equal(decodeBody(JSON.stringify({ ...base, sentAt: '2024-01-01' })), null);
+  });
+
+  it('rejects a missing location', () => {
+    const { location: _removed, ...noLocation } = base;
+    assert.equal(decodeBody(JSON.stringify(noLocation)), null);
+  });
+
+  it('rejects a location label that is too long (attack vector)', () => {
+    const longLabel = 'x'.repeat(201);
+    const body = { ...base, location: { kind: 'label', text: longLabel } };
+    assert.equal(decodeBody(JSON.stringify(body)), null);
+  });
+
+  it('rejects a location label that is only whitespace', () => {
+    const body = { ...base, location: { kind: 'label', text: '   ' } };
+    assert.equal(decodeBody(JSON.stringify(body)), null);
+  });
+
+  it('trims whitespace from a location label without changing meaning', () => {
+    const body = { ...base, location: { kind: 'label', text: '  north gate  ' } };
+    const decoded = decodeBody(JSON.stringify(body));
+    assert.equal(decoded?.kind, 'emergency');
+    if (decoded?.kind === 'emergency' && decoded.location.kind === 'label') {
+      assert.equal(decoded.location.text, 'north gate');
+    }
+  });
+
+  it('treats an unknown location kind as none (forward compatibility)', () => {
+    // A future version may add kind:'approximate'; old versions must still
+    // display the alert — they just cannot show the location.
+    const body = { ...base, location: { kind: 'approximate', area: 'downtown' } };
+    const decoded = decodeBody(JSON.stringify(body));
+    assert.equal(decoded?.kind, 'emergency');
+    if (decoded?.kind === 'emergency') {
+      assert.equal(decoded.location.kind, 'none');
+    }
+  });
+
+  it('strips extra attacker-chosen keys from the decoded body', () => {
+    const body = { ...base, injected: 'malicious', extra: true };
+    const decoded = decodeBody(JSON.stringify(body));
+    assert.ok(decoded);
+    assert.ok(!('injected' in decoded));
+    assert.ok(!('extra' in decoded));
+  });
+});
+
+describe('heartbeat message body', () => {
+  const base = {
+    kind: 'heartbeat' as const,
+    state: 'safe' as const,
+    sentAt: 1_700_000_000_000,
+    id: 'hb-abc123',
+  };
+
+  it('round-trips a heartbeat body', () => {
+    assert.deepEqual(decodeBody(encodeBody(base)), base);
+  });
+
+  it('rejects a missing id', () => {
+    const { id: _removed, ...noId } = base;
+    assert.equal(decodeBody(JSON.stringify(noId)), null);
+  });
+
+  it('rejects a missing sentAt', () => {
+    const { sentAt: _removed, ...noSentAt } = base;
+    assert.equal(decodeBody(JSON.stringify(noSentAt)), null);
+  });
+
+  it('rejects a state other than safe', () => {
+    // V1 only understands state:'safe'. An unknown state must be rejected
+    // rather than silently accepted, to prevent a future 'unsafe' state
+    // from being misinterpreted by old code as a safe heartbeat.
+    assert.equal(decodeBody(JSON.stringify({ ...base, state: 'unsafe' })), null);
+    assert.equal(decodeBody(JSON.stringify({ ...base, state: 'sos' })), null);
+    assert.equal(decodeBody(JSON.stringify({ ...base, state: 1 })), null);
+  });
+
+  it('strips extra keys from the decoded body', () => {
+    const body = { ...base, extra: 'sneaky' };
+    const decoded = decodeBody(JSON.stringify(body));
+    assert.ok(decoded);
+    assert.ok(!('extra' in decoded));
+  });
+});

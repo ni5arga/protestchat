@@ -67,7 +67,7 @@ Phones get taken and unlocked — sometimes by force. Instant local wipe, aggres
 
 **5. iOS background.**
 The killer. iOS aggressively suspends BLE in background. A relay only helps if it works with the phone in a pocket and the screen off. Does anyone have real-world numbers on background Nearby Connections / Core Bluetooth state-restoration behaviour on current iOS?
-
+`
 **6. Should this even be an app?**
 Honest question. An app store listing is a chokepoint and a "possession = intent" artifact. Sideloaded APK? PWA (no, WebBluetooth can't do this)? Meshtastic + LoRa gets kilometres of range and totally sidesteps cellular, but needs hardware nobody has in their pocket. Is phone-only the right call, or is it just the *convenient* one?
 

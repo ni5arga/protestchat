@@ -36,9 +36,26 @@ import {
   safetyNumber,
 } from './crypto';
 import * as db from './db';
+import {
+  EmergencyCategory,
+  canSendEmergency as emergencyCanSend,
+  canSendHeartbeat as heartbeatCanSend,
+  dismissEmergencyAlert,
+  emergencyChannelEntry,
+  getActiveAlerts,
+  getHeartbeats,
+  handleIncomingEmergencyBytes,
+  sendEmergencyAlert as sendEmergencyAlertFn,
+  sendHeartbeat as sendHeartbeatFn,
+  type EmergencyAlert,
+  type Heartbeat,
+} from './emergency-protocol';
 import type { MeshStatus } from './mesh';
 import { mesh, shortName } from './mesh';
 import { LocalPrekeys, PeerPrekeyBook } from './prekeys';
+
+export type { EmergencyAlert, Heartbeat };
+export { EmergencyCategory };
 
 const NAME_KEY = 'protestchat.displayName.v1';
 
@@ -83,6 +100,32 @@ type AppContextValue = {
 
   panicWipe: () => Promise<void>;
   refresh: () => Promise<void>;
+
+  // ---- Emergency coordination -------------------------------------------
+
+  /** Undismissed emergency alerts received from nearby devices. */
+  activeAlerts: EmergencyAlert[];
+  /** Most recent "I'm safe" heartbeat per nearby sender. */
+  heartbeats: Heartbeat[];
+
+  /**
+   * Broadcasts an emergency alert over the emergency channel.
+   * Throws if the per-category rate limit has not elapsed — check
+   * canSendEmergency(category) before calling.
+   */
+  sendEmergency: (category: EmergencyCategory) => Promise<void>;
+
+  /** Broadcasts an "I am safe" heartbeat. */
+  sendSafeHeartbeat: () => Promise<void>;
+
+  /** Hides an alert in the UI. Row stays for dedup until the 15-min sweep. */
+  dismissAlert: (id: string) => Promise<void>;
+
+  /** Whether the user may send an emergency of this category right now. */
+  canSendEmergency: (category: EmergencyCategory) => boolean;
+
+  /** Whether the user may send a heartbeat right now. */
+  canSendHeartbeat: () => boolean;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -106,6 +149,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [channels, setChannels] = useState<db.Channel[]>([]);
   const [groups, setGroups] = useState<db.Group[]>([]);
   const [contactCode, setContactCode] = useState('');
+  const [activeAlerts, setActiveAlerts] = useState<EmergencyAlert[]>([]);
+  const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([]);
 
   const identityRef = useRef<Identity | null>(null);
   const localPrekeysRef = useRef(new LocalPrekeys());
@@ -126,6 +171,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await db.saveLocalPrekeys(after.spk, after.otks);
   }, []);
 
+  /**
+   * Lightweight alert refresh — only queries emergency tables.
+   * Called after each incoming emergency message to avoid the cost of
+   * reloading conversations, contacts, channels, and groups.
+   */
+  const refreshAlerts = useCallback(async () => {
+    const [alerts, hbs] = await Promise.all([getActiveAlerts(), getHeartbeats()]);
+    setActiveAlerts(alerts);
+    setHeartbeats(hbs);
+  }, []);
+
   const refresh = useCallback(async () => {
     const [convos, cts, chs, grps] = await Promise.all([
       db.listConversations(),
@@ -138,7 +194,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setChannels(chs);
     setGroups(grps);
 
-    mesh.setChannelKeys(chs.map((c) => ({ id: c.id, key: c.key })));
+    // Always include the emergency channel key so trial decryption of
+    // emergency messages works regardless of what triggered the refresh.
+    // The emergency key is NOT in the channels table — this is the only
+    // place it is registered with the mesh engine.
+    mesh.setChannelKeys([
+      ...chs.map((c) => ({ id: c.id, key: c.key })),
+      emergencyChannelEntry(),
+    ]);
+
+    // Keep alert state in sync with the DB on every full refresh.
+    const [alerts, hbs] = await Promise.all([getActiveAlerts(), getHeartbeats()]);
+    setActiveAlerts(alerts);
+    setHeartbeats(hbs);
   }, []);
 
   // ---- boot -------------------------------------------------------------
@@ -181,13 +249,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsub = mesh.subscribe(setStatus);
     mesh.onMessage = () => void refresh();
 
+    // Wire the emergency receive callback. The handler is fire-and-forget:
+    // a crash inside it must never surface to the mesh engine or break chat.
+    mesh.onEmergencyMessage = (senderPublicId, bodyBytes) => {
+      void handleIncomingEmergencyBytes(senderPublicId, bodyBytes)
+        .then(() => refreshAlerts())
+        .catch((err) =>
+          console.warn('[emergency] receive handler failed:', err),
+        );
+    };
+
     return () => {
       cancelled = true;
       unsub();
       mesh.onMessage = null;
+      mesh.onEmergencyMessage = null;
       mesh.onPrekeysChanged = null;
     };
-  }, [refresh, persistPrekeys]);
+  }, [refresh, refreshAlerts, persistPrekeys]);
 
   // ---- expire + rotate on foreground and on a timer ---------------------
   useEffect(() => {
@@ -385,6 +464,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Drop in-memory secrets regardless of what threw above.
     identityRef.current = null;
     setIdentity(null);
+    setActiveAlerts([]);
+    setHeartbeats([]);
     localPrekeysRef.current = new LocalPrekeys();
     peerPrekeysRef.current = new PeerPrekeyBook();
     mesh.setPeerPrekeys(peerPrekeysRef.current);
@@ -409,6 +490,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await refresh();
     await mesh.start(fresh, freshName).catch(() => {});
   }, [refresh, persistPrekeys]);
+
+  // ---- Emergency actions ------------------------------------------------
+
+  const sendEmergency = useCallback(
+    async (category: EmergencyCategory) => {
+      await sendEmergencyAlertFn(category);
+      // No refresh needed — we sent it, not received it. The DB has no outgoing
+      // emergency record. The UI confirms via a sent-state on the SOS screen.
+    },
+    [],
+  );
+
+  const sendSafeHeartbeat = useCallback(async () => {
+    await sendHeartbeatFn();
+  }, []);
+
+  const dismissAlert = useCallback(
+    async (id: string) => {
+      await dismissEmergencyAlert(id);
+      await refreshAlerts();
+    },
+    [refreshAlerts],
+  );
+
+  const canSendEmergencyFn = useCallback(
+    (category: EmergencyCategory) => emergencyCanSend(category),
+    [],
+  );
+
+  const canSendHeartbeatFn = useCallback(() => heartbeatCanSend(), []);
 
   const value = useMemo<AppContextValue>(
     () => ({
@@ -435,6 +546,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       safetyNumberFor,
       panicWipe,
       refresh,
+      activeAlerts,
+      heartbeats,
+      sendEmergency,
+      sendSafeHeartbeat,
+      dismissAlert,
+      canSendEmergency: canSendEmergencyFn,
+      canSendHeartbeat: canSendHeartbeatFn,
     }),
     [
       ready,
@@ -460,6 +578,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       safetyNumberFor,
       panicWipe,
       refresh,
+      activeAlerts,
+      heartbeats,
+      sendEmergency,
+      sendSafeHeartbeat,
+      dismissAlert,
+      canSendEmergencyFn,
+      canSendHeartbeatFn,
     ],
   );
 

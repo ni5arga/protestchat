@@ -629,6 +629,35 @@ export const PUBLIC_CHANNEL_KEY: Uint8Array = hkdf(
 export const PUBLIC_CHANNEL_NAME = 'public';
 
 /**
+ * The emergency broadcast key — a hardcoded symmetric key held by every
+ * device running the app.
+ *
+ * This is cryptographically separate from PUBLIC_CHANNEL_KEY (different IKM
+ * string) and from any passphrase channel (uses hkdf, not scrypt). A user
+ * cannot accidentally or deliberately derive this key from any passphrase.
+ *
+ * Like PUBLIC_CHANNEL_KEY, this provides no confidentiality — any device
+ * running the app can read emergency messages. That is intentional: emergency
+ * alerts must reach strangers who are not in your contacts list.
+ *
+ * This key is NEVER stored in the channels table and NEVER exposed in any
+ * channel-joining UI. It lives only in memory inside emergency-protocol.ts.
+ * Registering it as a joinable channel would let a malicious operator create
+ * a fake "emergency" channel at the same key by knowing this constant, which
+ * is visible in the open-source code — so the threat is acknowledged and the
+ * defence is that the key is not routed through the channel UI at all.
+ */
+export const EMERGENCY_CHANNEL_KEY: Uint8Array = hkdf(
+  sha256,
+  toUtf8('protestchat/v1/emergency-broadcast'),
+  undefined,
+  KDF_INFO_CHANNEL,
+  32,
+);
+
+export const EMERGENCY_CHANNEL_ID = 'emergency.v1';
+
+/**
  * True if `name` refers to the reserved public-broadcast channel.
  *
  * The public row is a fixed, hardcoded key. A passphrase channel that

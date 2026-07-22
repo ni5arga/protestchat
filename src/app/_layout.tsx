@@ -68,7 +68,14 @@ function LocalizedLayout() {
             options={{ title: copy('nav.newGroup'), presentation: 'modal', animation: 'slide_from_bottom' }}
           />
           <Stack.Screen name="settings" options={{ title: copy('nav.settings') }} />
-        </Stack>
+          <Stack.Screen
+          name="emergency/sos"
+          options={{
+            presentation: 'modal',
+            headerShown: false,
+          }}
+        />
+      </Stack>
         </AppProvider>
       </KeyboardProvider>
     </SafeAreaProvider>

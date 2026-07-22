@@ -10,7 +10,7 @@
  * next-hop decisions, because a routing table is a map of who talks to whom and
  * that is precisely the thing worth not building. Every device carries every
  * unexpired envelope it has seen and offers it to every peer it meets; the
- * recipient is whoever can decrypt it. This costs bandwidth and battery and
+ * recipient is whoever can decrypt it. This costs bandwidth and battery a  nd
  * buys the property that a captured phone reveals nothing about who was
  * talking to whom.
  */
@@ -115,6 +115,19 @@ export class MeshEngine {
   onMessage:
     | ((conversationId: string, senderPublicId: string, text: string, sentAt: number) => void)
     | null = null;
+
+  /**
+   * Fired when a message opens under the emergency broadcast key.
+   *
+   * Separate from `onMessage` by design: the emergency protocol layer handles
+   * these bodies differently (storing to emergency_alerts / heartbeats rather
+   * than the messages table), and the mesh engine must not need to know which
+   * key is "the emergency key" — that concern belongs one layer up.
+   *
+   * Receives the raw decrypted body bytes so the caller can decode and route
+   * them without the mesh engine needing to import emergency types.
+   */
+  onEmergencyMessage: ((senderPublicId: string, bodyBytes: Uint8Array) => void) | null = null;
 
   /** Replaces the set of channel keys used for trial decryption. */
   setChannelKeys(keys: { id: string; key: Uint8Array }[]): void {
@@ -352,6 +365,25 @@ export class MeshEngine {
     await this.inject(sealed);
 
     return messageId;
+  }
+
+  /**
+   * Seals pre-encoded body bytes to a symmetric key and injects the envelope.
+   *
+   * Unlike sendToChannel, this does not wrap the body in packBody(text) —
+   * the caller supplies the complete padded payload bytes. Used by the
+   * emergency protocol layer to send its own structured body format (kind:
+   * 'emergency' | 'heartbeat') without nesting it inside a kind:'text' shell.
+   *
+   * No entry is written to the messages table — emergency messages are stored
+   * in emergency_alerts / heartbeats, not in the chat history.
+   *
+   * Returns the envelope id (base64) for the caller's rate-limiting records.
+   */
+  async sendEncodedToKey(key: Uint8Array, bodyBytes: Uint8Array): Promise<void> {
+    if (!this.identity) throw new Error('mesh not started');
+    const sealed = sealToKey(this.identity, key, bodyBytes);
+    await this.inject(sealed);
   }
 
   /**
@@ -637,6 +669,23 @@ export class MeshEngine {
           this.peerPrekeys.absorbWire(hit.opened.sender, parsed.prekeys);
         }
         await this.applyReceipt(hit.opened.sender.publicId, parsed.messageId);
+      } else if (
+        (parsed?.kind === 'emergency' || parsed?.kind === 'heartbeat') &&
+        hit.conversationId !== null
+      ) {
+        // Emergency and heartbeat bodies open under a channel key (not our
+        // identity), so conversationId is non-null. We route them to the
+        // emergency protocol layer via the onEmergencyMessage callback rather
+        // than filing them in the messages table. The callback receives the
+        // raw body bytes so emergency-protocol.ts can decode and store them
+        // without the mesh engine importing emergency types.
+        //
+        // We do NOT call onMessage here — emergency messages must not appear
+        // in the chat history alongside normal text messages.
+        const unpadded2 = unpad(hit.opened.body);
+        if (unpadded2) {
+          this.onEmergencyMessage?.(hit.opened.sender.publicId, unpadded2);
+        }
       }
 
       // Still stored and relayed even though it was ours. Dropping it here

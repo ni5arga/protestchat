@@ -232,7 +232,46 @@ export const en = {
   'a11y.unread.one': '{count} unread.',
   'a11y.unread.other': '{count} unread.',
   'a11y.sectionAction': '{action} {section}',
+
+  // ---- Emergency coordination -------------------------------------------
+
+  'emergency.sectionTitle': 'EMERGENCY',
+  'emergency.iAmSafe': "I'm Safe",
+  'emergency.needHelp': 'Need Help',
+  'emergency.medical': 'Medical',
+  'emergency.unsafe': 'Unsafe Situation',
+  'emergency.lostGroup': 'Lost My Group',
+
+  'emergency.holdToSend': 'Hold to send alert',
+  'emergency.holdingToSend': 'Sending\u2026',
+  'emergency.releaseToCancel': 'Release to cancel',
+  'emergency.sent': 'Alert sent',
+  'emergency.rateLimited': 'Wait before sending again',
+  'emergency.cooldownRemaining': '{seconds}s before next alert',
+
+  'emergency.safeHeartbeatSent': 'Safe signal sent',
+
+  'emergency.alertsTitle': 'NEARBY ALERTS',
+  'emergency.noAlerts': 'No active alerts nearby',
+  'emergency.dismiss': 'Dismiss',
+  'emergency.trustNote': 'Reported by nearby user \u2014 not verified',
+  'emergency.reportCount.one': '{count} person nearby',
+  'emergency.reportCount.other': '{count} people nearby',
+  'emergency.minutesAgo.one': '{count} min ago',
+  'emergency.minutesAgo.other': '{count} min ago',
+  'emergency.justNow': 'just now',
+
+  'emergency.category.medical': 'Medical emergency',
+  'emergency.category.unsafe': 'Unsafe situation',
+  'emergency.category.lost_group': 'Lost group',
+  'emergency.category.need_help': 'Needs help',
+
+  'emergency.sos.title': 'Send Emergency Alert',
+  'emergency.sos.instruction': 'Hold the button below to send an alert to everyone nearby.',
+  'emergency.sos.trustWarning': 'This alert will reach all phones running this app within Bluetooth range. There is no way to recall it.',
+  'emergency.sos.cancel': 'Cancel',
 } as const;
+
 
 export type MessageKey = keyof typeof en;
 export type Catalog = { [K in MessageKey]: string };

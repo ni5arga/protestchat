@@ -197,6 +197,78 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
       spk_b64     TEXT,
       otks_json   TEXT NOT NULL
     );
+
+    -- -----------------------------------------------------------------------
+    -- Emergency coordination tables (V1)
+    -- -----------------------------------------------------------------------
+
+    -- Received emergency alerts, merged by (sender + category + 5-min bucket).
+    --
+    -- window_bucket is floor(sent_at / 300000) — a 5-minute integer key.
+    -- The UNIQUE constraint on (sender_id, category, window_bucket) turns a
+    -- flood of duplicate alerts into a single row with an incrementing count,
+    -- which is exactly the merge-not-spam behaviour the UI needs.
+    --
+    -- area_label is NULL when the sender chose not to share location, or a
+    -- user-typed text string (max 200 chars). GPS coordinates are deliberately
+    -- absent — see EmergencyLocationLabel in protocol.ts.
+    --
+    -- dismissed is 1 once the user swipes the alert away. Dismissed alerts
+    -- are hidden in the UI but kept until the next sweep so the merge key
+    -- remains intact and a new alert from the same sender in the same window
+    -- does not re-surface a dismissed row.
+    CREATE TABLE IF NOT EXISTS emergency_alerts (
+      id            TEXT PRIMARY KEY NOT NULL,
+      sender_id     TEXT NOT NULL,
+      category      TEXT NOT NULL,
+      urgency       TEXT NOT NULL DEFAULT 'high',
+      area_label    TEXT,
+      sent_at       INTEGER NOT NULL,
+      first_seen    INTEGER NOT NULL,
+      window_bucket INTEGER NOT NULL,
+      report_count  INTEGER NOT NULL DEFAULT 1,
+      dismissed     INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS emergency_alerts_dedup
+      ON emergency_alerts (sender_id, category, window_bucket);
+    CREATE INDEX IF NOT EXISTS emergency_alerts_by_first_seen
+      ON emergency_alerts (first_seen);
+
+    -- Safety heartbeats from nearby users.
+    --
+    -- Only the most recent heartbeat per sender matters to the UI, so the
+    -- UNIQUE constraint on sender_id with ON CONFLICT REPLACE keeps the table
+    -- at most one row per sender. The old row is atomically replaced by the
+    -- newer one — no stale "safe" signal can persist after a newer one arrives.
+    --
+    -- Heartbeats expire on the same 15-minute window as emergency alerts:
+    -- a "safe" signal from an hour ago is history, not current status.
+    CREATE TABLE IF NOT EXISTS heartbeats (
+      id         TEXT PRIMARY KEY NOT NULL,
+      sender_id  TEXT NOT NULL UNIQUE,
+      state      TEXT NOT NULL DEFAULT 'safe',
+      sent_at    INTEGER NOT NULL,
+      first_seen INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS heartbeats_by_first_seen
+      ON heartbeats (first_seen);
+
+    -- Community reports (V1.5 — table reserved, no UI functions yet).
+    --
+    -- Created now so V1.5 can insert rows without a schema migration.
+    -- No indexes beyond the primary key: query patterns are unknown until
+    -- the feature is designed. Add indexes in the V1.5 migration if needed.
+    CREATE TABLE IF NOT EXISTS community_reports (
+      id           TEXT PRIMARY KEY NOT NULL,
+      sender_id    TEXT,
+      category     TEXT NOT NULL,
+      description  TEXT NOT NULL,
+      area_label   TEXT,
+      sent_at      INTEGER NOT NULL,
+      first_seen   INTEGER NOT NULL,
+      report_count INTEGER NOT NULL DEFAULT 1,
+      dismissed    INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   await migrateMessagesFirstSeen(db);
@@ -629,6 +701,9 @@ export async function markMessageSeen(hashB64: string): Promise<boolean> {
 // Expiry and wipe
 // ---------------------------------------------------------------------------
 
+/** The retention window for emergency alerts and heartbeats (15 minutes). */
+export const EMERGENCY_RETENTION_MS = 15 * 60 * 1000;
+
 /** Drops everything past its TTL. Call on every foreground and on a timer. */
 export async function sweepExpired(): Promise<void> {
   const d = await getDb();
@@ -657,6 +732,179 @@ export async function sweepExpired(): Promise<void> {
   await d.runAsync(`DELETE FROM one_time_keys WHERE created_at <= ?`, [
     now - RECEIVE_KEY_RETENTION_MS,
   ]);
+
+  // Emergency data has a much shorter retention window (15 minutes).
+  // A medical alert from 20 minutes ago is not actionable — it is evidence
+  // sitting on a phone that might be inspected. Sweep aggressively.
+  await d.runAsync(`DELETE FROM emergency_alerts WHERE first_seen <= ?`, [
+    now - EMERGENCY_RETENTION_MS,
+  ]);
+  await d.runAsync(`DELETE FROM heartbeats WHERE first_seen <= ?`, [
+    now - EMERGENCY_RETENTION_MS,
+  ]);
+  // community_reports is a V1.5 feature; the table exists but is always empty
+  // in V1 so this is a no-op — included now so the sweep is complete when
+  // V1.5 starts writing rows.
+  await d.runAsync(`DELETE FROM community_reports WHERE first_seen <= ?`, [
+    now - EMERGENCY_RETENTION_MS,
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Emergency coordination storage
+// ---------------------------------------------------------------------------
+
+/**
+ * The 5-minute bucket key used for alert deduplication.
+ *
+ * Two alerts with the same (sender_id, category) in the same 5-minute window
+ * map to the same bucket and are merged into one row with an incremented
+ * report_count. This is how "7 nearby users reported medical emergency"
+ * is produced without storing 7 separate rows per incident.
+ */
+function windowBucket(sentAt: number): number {
+  return Math.floor(sentAt / (5 * 60 * 1000));
+}
+
+export type EmergencyAlert = {
+  id: string;
+  senderId: string;
+  category: string;
+  urgency: string;
+  areaLabel: string | null;
+  sentAt: number;
+  firstSeen: number;
+  reportCount: number;
+  dismissed: boolean;
+};
+
+/**
+ * Inserts or merges an incoming emergency alert.
+ *
+ * If the same sender sends the same category within a 5-minute window, the
+ * existing row's report_count is incremented rather than inserting a new row.
+ * This collapses repeated taps from one sender into one alert.
+ *
+ * If a DIFFERENT sender sends the same category in the same window, a new row
+ * is inserted (different sender_id, same window_bucket) — each sender gets
+ * their own row, and the UI sums report_count to show "N users reported".
+ */
+export async function insertEmergencyAlert(alert: {
+  id: string;
+  senderId: string;
+  category: string;
+  urgency: string;
+  areaLabel: string | null;
+  sentAt: number;
+}): Promise<void> {
+  const d = await getDb();
+  const now = Date.now();
+  const bucket = windowBucket(alert.sentAt);
+  await d.runAsync(
+    `INSERT INTO emergency_alerts
+       (id, sender_id, category, urgency, area_label, sent_at, first_seen, window_bucket, report_count, dismissed)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+     ON CONFLICT(sender_id, category, window_bucket)
+       DO UPDATE SET report_count = report_count + 1`,
+    [alert.id, alert.senderId, alert.category, alert.urgency, alert.areaLabel, alert.sentAt, now, bucket],
+  );
+}
+
+/**
+ * Returns undismissed emergency alerts, newest first, limited to 20.
+ *
+ * The limit is a UI cap — a screen that shows 500 simultaneous emergencies
+ * is not usable under stress. 20 is enough context without overwhelming.
+ * Expired rows are already gone (swept every 15 minutes).
+ */
+export async function listActiveAlerts(): Promise<EmergencyAlert[]> {
+  const d = await getDb();
+  const rows = await d.getAllAsync<{
+    id: string;
+    sender_id: string;
+    category: string;
+    urgency: string;
+    area_label: string | null;
+    sent_at: number;
+    first_seen: number;
+    report_count: number;
+    dismissed: number;
+  }>(
+    `SELECT id, sender_id, category, urgency, area_label, sent_at, first_seen, report_count, dismissed
+     FROM emergency_alerts
+     WHERE dismissed = 0
+     ORDER BY first_seen DESC
+     LIMIT 20`,
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    senderId: r.sender_id,
+    category: r.category,
+    urgency: r.urgency,
+    areaLabel: r.area_label,
+    sentAt: r.sent_at,
+    firstSeen: r.first_seen,
+    reportCount: r.report_count,
+    dismissed: r.dismissed === 1,
+  }));
+}
+
+/** Marks an alert as dismissed. Hidden in UI; row stays for dedup until swept. */
+export async function dismissAlert(id: string): Promise<void> {
+  const d = await getDb();
+  await d.runAsync(`UPDATE emergency_alerts SET dismissed = 1 WHERE id = ?`, [id]);
+}
+
+export type Heartbeat = {
+  id: string;
+  senderId: string;
+  state: string;
+  sentAt: number;
+  firstSeen: number;
+};
+
+/**
+ * Inserts or replaces a heartbeat for a sender.
+ *
+ * The UNIQUE constraint on sender_id with the INSERT OR REPLACE strategy keeps
+ * exactly one row per sender — the most recent. An older "safe" signal cannot
+ * persist after a newer one from the same sender arrives.
+ */
+export async function insertHeartbeat(hb: {
+  id: string;
+  senderId: string;
+  state: string;
+  sentAt: number;
+}): Promise<void> {
+  const d = await getDb();
+  const now = Date.now();
+  await d.runAsync(
+    `INSERT OR REPLACE INTO heartbeats (id, sender_id, state, sent_at, first_seen)
+     VALUES (?, ?, ?, ?, ?)`,
+    [hb.id, hb.senderId, hb.state, hb.sentAt, now],
+  );
+}
+
+/**
+ * Returns the most recent heartbeat for each sender, newest first.
+ * Only used to show "last known safe" status next to known contacts.
+ */
+export async function listHeartbeats(): Promise<Heartbeat[]> {
+  const d = await getDb();
+  const rows = await d.getAllAsync<{
+    id: string;
+    sender_id: string;
+    state: string;
+    sent_at: number;
+    first_seen: number;
+  }>(`SELECT id, sender_id, state, sent_at, first_seen FROM heartbeats ORDER BY first_seen DESC`);
+  return rows.map((r) => ({
+    id: r.id,
+    senderId: r.sender_id,
+    state: r.state,
+    sentAt: r.sent_at,
+    firstSeen: r.first_seen,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -800,6 +1048,9 @@ export async function wipeEverything(): Promise<void> {
       DELETE FROM receive_keys;
       DELETE FROM one_time_keys;
       DELETE FROM peer_prekeys;
+      DELETE FROM emergency_alerts;
+      DELETE FROM heartbeats;
+      DELETE FROM community_reports;
     `);
   });
   // VACUUM reclaims the freed pages so deleted plaintext is not left lying in
