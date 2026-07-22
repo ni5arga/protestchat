@@ -31,6 +31,7 @@ import { useI18n } from '@/i18n/provider';
 import { useApp } from '@/lib/app-state';
 import { describeConversation, type ConversationInfo } from '@/lib/conversation';
 import * as db from '@/lib/db';
+import { armVerification } from '@/lib/verify-session';
 
 export default function ChatScreen() {
   const t = useTheme();
@@ -153,7 +154,10 @@ export default function ChatScreen() {
         // one warning a user can actually act on from here.
         onPress={
           info.mode === 'direct' && !contact?.verified
-            ? () => router.push(`/verify/${encodeURIComponent(conversationId)}`)
+            ? () => {
+                armVerification(conversationId);
+                router.push(`/verify/${encodeURIComponent(conversationId)}`);
+              }
             : undefined
         }
       />
