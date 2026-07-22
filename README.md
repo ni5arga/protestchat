@@ -165,6 +165,12 @@ Row 4 is the real proof — it is the difference between a mesh and a Bluetooth 
 
 The channel test worth doing deliberately: join `gate4` on two phones with the same passphrase and on a third with the *wrong* one. The third should see nothing while still relaying the traffic — that demonstrates confidentiality and relaying are genuinely independent, which is the core claim of the design.
 
+## Recent Features (Emergency & Quick Chat)
+
+- **Hold and Chat**: Added support for hold-and-chat interactions.
+- **Quick Replies**: Added 5 predefined messages to avoid manual typing during critical situations: "I'm safe", "Medical", "Need help", "Unsafe situation", and "Lost my group".
+- **Enhanced UI and UX**: Upgraded the overall user interface and experience for faster, more intuitive access during emergencies.
+
 ## What is not built yet
 
 - Background relaying (iOS suspends BLE aggressively — the biggest open problem)
