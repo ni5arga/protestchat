@@ -36,6 +36,7 @@ import {
   safetyNumber,
 } from './crypto';
 import * as db from './db';
+import { GenerationQueue } from './generation-queue';
 import type { MeshStatus } from './mesh';
 import { mesh, shortName } from './mesh';
 import { LocalPrekeys, PeerPrekeyBook } from './prekeys';
@@ -110,20 +111,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const identityRef = useRef<Identity | null>(null);
   const localPrekeysRef = useRef(new LocalPrekeys());
   const peerPrekeysRef = useRef(new PeerPrekeyBook());
+  // Serialises prekey disk writes and lets panic wipe invalidate in-flight ones (#70).
+  const prekeyPersistRef = useRef(new GenerationQueue());
 
   const persistPrekeys = useCallback(async (id: Identity) => {
-    const local = localPrekeysRef.current;
-    local.ensureReady();
-    const snap = local.snapshot();
-    await db.saveLocalPrekeys(snap.spk, snap.otks);
-    await db.savePeerPrekeys(peerPrekeysRef.current.snapshot());
-    mesh.setLocalPrekeys(local);
-    mesh.setPeerPrekeys(peerPrekeysRef.current);
-    const bundle = local.bundleForQr(id);
-    setContactCode(encodeContactCode(id.publicId, bundle));
-    // bundleForQr is SPK-only, but ensureReady/fillPool may have minted keys.
-    const after = local.snapshot();
-    await db.saveLocalPrekeys(after.spk, after.otks);
+    await prekeyPersistRef.current.run(async (stillValid) => {
+      if (!stillValid()) return;
+      const local = localPrekeysRef.current;
+      local.ensureReady();
+      const snap = local.snapshot();
+      if (!stillValid()) return;
+      await db.saveLocalPrekeys(snap.spk, snap.otks);
+      if (!stillValid()) return;
+      await db.savePeerPrekeys(peerPrekeysRef.current.snapshot());
+      if (!stillValid()) return;
+      mesh.setLocalPrekeys(local);
+      mesh.setPeerPrekeys(peerPrekeysRef.current);
+      const bundle = local.bundleForQr(id);
+      setContactCode(encodeContactCode(id.publicId, bundle));
+      // bundleForQr is SPK-only, but ensureReady/fillPool may have minted keys.
+      const after = local.snapshot();
+      if (!stillValid()) return;
+      await db.saveLocalPrekeys(after.spk, after.otks);
+    });
   }, []);
 
   const refresh = useCallback(async () => {
@@ -191,13 +201,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ---- expire + rotate on foreground and on a timer ---------------------
   useEffect(() => {
+    let cancelled = false;
     const syncKeys = () => {
+      if (cancelled) return;
       const id = identityRef.current;
       if (!id) return;
       void db
         .sweepExpired()
-        .then(() => persistPrekeys(id))
-        .then(refresh);
+        .then(() => {
+          if (cancelled) return;
+          return persistPrekeys(id);
+        })
+        .then(() => {
+          if (cancelled) return;
+          return refresh();
+        });
     };
 
     const sub = AppState.addEventListener('change', (next) => {
@@ -205,6 +223,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     const timer = setInterval(syncKeys, Math.min(RECEIVE_KEY_ROTATION_MS, 60_000));
     return () => {
+      cancelled = true;
       sub.remove();
       clearInterval(timer);
     };
@@ -374,6 +393,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    // Fence prekey persistence first (#70): drop the identity so periodic
+    // syncKeys cannot start a fresh persist, invalidate in-flight snapshots,
+    // stop mesh callbacks, drain the queue, then erase disk. Otherwise a
+    // persist that captured live OTK/SPK bytes can land after wipeEverything.
+    identityRef.current = null;
+    prekeyPersistRef.current.invalidate();
+    mesh.onPrekeysChanged = null;
+    await wipeStep('prekey persist drain', () => prekeyPersistRef.current.drain());
+
     await wipeStep('identity seed', () => destroyIdentity());
     await wipeStep('display name', () => SecureStore.deleteItemAsync(NAME_KEY));
     // Drop live mesh secrets *before* the DB wipe and *before* awaiting
@@ -386,7 +414,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await wipeStep('radio', () => mesh.stop());
 
     // Drop app-level in-memory secrets regardless of what threw above.
-    identityRef.current = null;
     setIdentity(null);
     localPrekeysRef.current = new LocalPrekeys();
     peerPrekeysRef.current = new PeerPrekeyBook();
@@ -408,6 +435,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     identityRef.current = fresh;
     setIdentity(fresh);
     setName(freshName);
+    mesh.onPrekeysChanged = () => {
+      const cur = identityRef.current;
+      if (cur) void persistPrekeys(cur);
+    };
     await persistPrekeys(fresh);
     await refresh();
     await mesh.start(fresh, freshName).catch(() => {});
