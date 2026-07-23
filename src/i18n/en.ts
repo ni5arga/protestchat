@@ -117,6 +117,8 @@ export const en = {
   'conversation.channelWarning': 'Anyone who knows this channel’s passphrase can read everything in it, including messages sent before they joined.',
   'conversation.groupWarning.one': 'Encrypted separately to the 1 person you added. Only they can read it.',
   'conversation.groupWarning.other': 'Encrypted separately to each of the {count} people you added. Only they can read it.',
+  'conversation.groupWarningUnverified.one': '1 member here has not been verified. If their code was faked at introduction, they can read everything sent to this group.',
+  'conversation.groupWarningUnverified.other': '{count} members here have not been verified. If any of their codes were faked at introduction, they can read everything sent to this group.',
   'conversation.directVerified': 'Encrypted to this person only.',
   'conversation.directUnverified': 'Not verified yet — anyone could be on the other end. Tap to check the safety number together, in person.',
 
@@ -125,6 +127,7 @@ export const en = {
   'mode.encryptedMembers': 'Encrypted to members',
   'mode.encrypted': 'Encrypted',
   'mode.notVerified': 'Not verified',
+  'mode.notVerifiedMembers': 'Not all verified',
   'mode.checkSafetyNumber': 'Check the safety number ›',
   'mode.openSafetyHint': 'Opens the safety number check',
 

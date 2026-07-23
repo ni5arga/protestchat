@@ -52,10 +52,11 @@ export default function ChatScreen() {
       describeConversation(conversationId, {
         channels,
         groups,
+        contacts,
         contactName: contact?.name,
         verified: contact?.verified,
       }, i18n),
-    [conversationId, channels, groups, contact, i18n],
+    [conversationId, channels, groups, contacts, contact, i18n],
   );
 
   const [messages, setMessages] = useState<db.Message[]>([]);

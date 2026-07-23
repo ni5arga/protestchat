@@ -125,20 +125,34 @@ export default function HomeScreen() {
         </Card>
       ) : (
         <List>
-          {groups.map((g) => (
-            <Row
-              key={g.id}
-              title={g.name}
-              subtitle={
-                last.get(`~${g.id}`)?.lastText ??
-                plural('home.groupPeople', g.members.length)
-              }
-              onPress={() => open(`~${g.id}`)}
-              unread={last.get(`~${g.id}`)?.unread ?? 0}
-              leading={<Leading kind="group" name={g.name} />}
-              tag={<Tag tone="ok" label={copy('home.private')} />}
-            />
-          ))}
+          {groups.map((g) => {
+            // Absence of a verified contact record counts as unverified —
+            // an impersonator who slipped in at introduction still reads
+            // this group, and the tag has to say so.
+            const unverified = g.members.filter(
+              (m) => !contacts.find((c) => c.publicId === m)?.verified,
+            ).length;
+            return (
+              <Row
+                key={g.id}
+                title={g.name}
+                subtitle={
+                  last.get(`~${g.id}`)?.lastText ??
+                  plural('home.groupPeople', g.members.length)
+                }
+                onPress={() => open(`~${g.id}`)}
+                unread={last.get(`~${g.id}`)?.unread ?? 0}
+                leading={<Leading kind="group" name={g.name} />}
+                tag={
+                  unverified > 0 ? (
+                    <Tag tone="caution" label={plural('group.unverifiedTitle', unverified)} />
+                  ) : (
+                    <Tag tone="ok" label={copy('home.private')} />
+                  )
+                }
+              />
+            );
+          })}
         </List>
       )}
 
