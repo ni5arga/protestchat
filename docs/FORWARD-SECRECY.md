@@ -36,13 +36,13 @@ Wire layout of sealed payloads is unchanged (relays still cannot tell modes apar
 |--------|----------|
 | No key server | QR SPK + in-band OTK replenishment |
 | Same QR scanned by two people | SPK only on QR — both deliver; OTKs are exclusive in-band |
-| In-flight after SPK rotation | SPK ring retained 6h |
-| Trial-decrypt cost | OTK pool ceiling (24) + `OPEN_SECRET_CAP` (28); newest-first |
+| In-flight after SPK rotation | SPK ring retained 6h and always included in `secretsForOpen` |
+| Trial-decrypt cost | OTK pool ceiling (24) + OTK walk cap (`OPEN_SECRET_CAP`); full SPK ring always tried |
 | Forged prekeys | Signature binds SPK **and** the exact OTK list; substituted OTKs fail verify |
 
 ## Trial-decrypt cost
 
-Every sealed envelope on the air is tried against every agreement secret we hold (opacity: no prekey-id hint). With the ceiling above, worst case is ~28 X25519 ops + AEAD fails per envelope before the long-term try — see the `trial-open cost` unit test for a host-side measurement. A flooder can still amplify this into battery drain; ingress budgets remain a separate hardening track.
+Every sealed envelope on the air is tried against agreement secrets we hold (opacity: no prekey-id hint). OTK trials are capped at `OPEN_SECRET_CAP`; the full retained SPK ring is always included after that. A flooder can still amplify this into battery drain; ingress budgets remain a separate hardening track.
 
 ## Tests
 

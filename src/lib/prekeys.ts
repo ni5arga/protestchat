@@ -42,8 +42,9 @@ export const OTK_POOL_FLOOR = 8;
  */
 export const OTK_POOL_CEILING = 24;
 /**
- * Max agreement secrets `open()` will walk (OTK + SPK). Newest OTKs first.
- * Long-term identity is always tried after this list.
+ * Max **OTK** secrets `open()` will walk (newest first). The full retained SPK
+ * ring is always tried after that — capping SPKs behind a full OTK pool made
+ * in-flight SPK mail undeliverable (#50). Long-term identity is always last.
  */
 export const OPEN_SECRET_CAP = 28;
 
@@ -95,13 +96,15 @@ export class LocalPrekeys {
   }
 
   /**
-   * Secrets for trial decryption: newest OTKs first, then SPKs, capped so a
-   * full pool cannot turn every overheard envelope into dozens of X25519 ops.
+   * Secrets for trial decryption: newest OTKs first (capped), then the full
+   * retained SPK ring. SPKs are never sliced off by the OTK cap (#50).
    */
   secretsForOpen(): Uint8Array[] {
-    const otks = [...this.otks.values()].sort((a, b) => b.createdAt - a.createdAt);
-    const secrets = [...otks.map((o) => o.secret), ...this.spk.map((k) => k.secret)];
-    return secrets.slice(0, OPEN_SECRET_CAP);
+    const otks = [...this.otks.values()]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((o) => o.secret)
+      .slice(0, OPEN_SECRET_CAP);
+    return [...otks, ...this.spk.map((k) => k.secret)];
   }
 
   currentSpk(): ReceiveKey | null {
