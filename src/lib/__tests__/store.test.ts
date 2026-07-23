@@ -9,6 +9,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import type { Envelope } from '../protocol';
+import {
+  DEFAULTS,
+  EnvelopeType,
+  HEADER_LEN,
+  MAX_ENVELOPE_LEN,
+  PROTOCOL_VERSION,
+} from '../protocol';
 import type { Message } from '../store';
 import { MESSAGE_RETENTION_MS, createMemoryStore } from '../store';
 
@@ -88,5 +96,23 @@ describe('message retention', () => {
       false,
       'ledger swept with its message',
     );
+  });
+});
+
+describe('storeEnvelope size gate (#72)', () => {
+  it('swallows an oversized envelope instead of throwing', async () => {
+    const store = createMemoryStore();
+    const oversized: Envelope = {
+      version: PROTOCOL_VERSION,
+      type: EnvelopeType.Sealed,
+      id: new Uint8Array(16).fill(1),
+      createdAt: Date.now(),
+      ttlSeconds: DEFAULTS.ttlSeconds,
+      hopCount: 0,
+      maxHops: DEFAULTS.maxHops,
+      payload: new Uint8Array(MAX_ENVELOPE_LEN - HEADER_LEN + 1),
+    };
+    await assert.doesNotReject(() => store.storeEnvelope(oversized));
+    assert.equal(store.envelopes.length, 0);
   });
 });

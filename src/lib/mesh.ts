@@ -211,7 +211,10 @@ export class MeshEngine {
         this.servedToPeer.delete(id);
         this.emit();
       }),
-      this.transport.on('payload', (peerId, b64) => void this.ingest(peerId, b64)),
+      this.transport.on('payload', (peerId, b64) => {
+        // Hostile/malformed frames must not surface as unhandled rejections (#72).
+        void this.ingest(peerId, b64).catch(() => {});
+      }),
       this.transport.on('error', (message) => {
         // An empty message is the transport's "clear the error" signal, e.g. the
         // radio reaching 'ready' after a transient startup state.

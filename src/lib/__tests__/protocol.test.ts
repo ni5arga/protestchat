@@ -15,6 +15,7 @@ import {
   DEFAULTS,
   EnvelopeType,
   HEADER_LEN,
+  MAX_ENVELOPE_LEN,
   MAX_HOPS,
   PROTOCOL_VERSION,
   TIME_GRANULARITY_MS,
@@ -128,6 +129,30 @@ describe('envelope decoding is hostile-input safe', () => {
 
   it('refuses to encode an oversized payload', () => {
     assert.throws(() => encodeEnvelope(sample({ payload: new Uint8Array(40_000) })));
+  });
+
+  it('rejects a payload above the encode cap but under the native BLE reassembly cap (#72)', () => {
+    // Native layers reassemble up to 32 KiB; encode refuses above MAX_ENVELOPE_LEN.
+    // Craft a well-formed header whose payloadLen sits in that gap.
+    const payloadLen = MAX_ENVELOPE_LEN - HEADER_LEN + 1;
+    assert.ok(HEADER_LEN + payloadLen <= 32_768, 'fixture must fit under native cap');
+
+    const raw = new Uint8Array(HEADER_LEN + payloadLen);
+    raw[0] = 0x50;
+    raw[1] = 0x43;
+    raw[2] = PROTOCOL_VERSION;
+    raw[3] = EnvelopeType.Sealed;
+    raw.fill(9, 4, 20);
+    const view = new DataView(raw.buffer);
+    const t = Math.floor(1_700_000_040_000 / TIME_GRANULARITY_MS) * TIME_GRANULARITY_MS;
+    view.setUint16(20, Math.floor(t / 0x100000000));
+    view.setUint32(22, t % 0x100000000);
+    view.setUint32(26, DEFAULTS.ttlSeconds);
+    raw[30] = 0;
+    raw[31] = DEFAULTS.maxHops;
+    view.setUint16(32, payloadLen);
+
+    assert.equal(decodeEnvelope(raw), null);
   });
 
   it('refuses to encode a wrong-length id', () => {

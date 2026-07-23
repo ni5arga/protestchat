@@ -199,9 +199,16 @@ export function createMemoryStore(now: () => number = Date.now): MemoryStore {
       const t = now();
       const claimed = e.createdAt + e.ttlSeconds * 1000;
       const id = toBase64(e.id);
+      let raw: string;
+      try {
+        raw = toBase64(encodeEnvelope(e));
+      } catch {
+        // Match db.ts: refuse oversized envelopes without throwing (#72).
+        return;
+      }
       envelopes.set(id, {
         id,
-        raw: toBase64(encodeEnvelope(e)),
+        raw,
         createdAt: e.createdAt,
         // Same first-sight cap as db.ts: a peer that inflates ttlSeconds must
         // not be able to make us hoard its traffic.
