@@ -693,33 +693,42 @@ export async function loadLocalPrekeys(): Promise<{ spk: ReceiveKey[]; otks: Per
 
 export async function saveLocalPrekeys(spk: ReceiveKey[], otks: PersistedOtk[]): Promise<void> {
   const d = await getDb();
-  await d.execAsync('DELETE FROM receive_keys; DELETE FROM one_time_keys;');
-  for (const k of spk) {
-    await d.runAsync(
-      `INSERT INTO receive_keys (public_b64, secret_b64, created_at) VALUES (?, ?, ?)`,
-      [toBase64(k.public), toBase64(k.secret), k.createdAt],
-    );
-  }
-  for (const o of otks) {
-    await d.runAsync(
-      `INSERT INTO one_time_keys (public_b64, secret_b64, created_at, issued_to) VALUES (?, ?, ?, ?)`,
-      [toBase64(o.public), toBase64(o.secret), o.createdAt, o.issuedTo],
-    );
-  }
+  // Atomic replace: never leave the tables half-deleted if a write fails mid-loop,
+  // and serialize against wipeEverything's exclusive transaction (#70).
+  await d.withExclusiveTransactionAsync(async (tx) => {
+    await tx.execAsync('DELETE FROM receive_keys; DELETE FROM one_time_keys;');
+    for (const k of spk) {
+      await tx.runAsync(
+        `INSERT INTO receive_keys (public_b64, secret_b64, created_at) VALUES (?, ?, ?)`,
+        [toBase64(k.public), toBase64(k.secret), k.createdAt],
+      );
+    }
+    for (const o of otks) {
+      await tx.runAsync(
+        `INSERT INTO one_time_keys (public_b64, secret_b64, created_at, issued_to) VALUES (?, ?, ?, ?)`,
+        [toBase64(o.public), toBase64(o.secret), o.createdAt, o.issuedTo],
+      );
+    }
+  });
 }
 
 export async function savePeerPrekeys(
   entries: { publicId: string; spk: SignedReceiveKey | null; otks: Uint8Array[] }[],
 ): Promise<void> {
   const d = await getDb();
-  await d.execAsync('DELETE FROM peer_prekeys');
-  for (const e of entries) {
-    await d.runAsync(`INSERT INTO peer_prekeys (public_id, spk_b64, otks_json) VALUES (?, ?, ?)`, [
-      e.publicId,
-      e.spk ? encodeSignedReceiveKey(e.spk) : null,
-      JSON.stringify(e.otks.map((p) => toBase64(p))),
-    ]);
-  }
+  await d.withExclusiveTransactionAsync(async (tx) => {
+    await tx.execAsync('DELETE FROM peer_prekeys');
+    for (const e of entries) {
+      await tx.runAsync(
+        `INSERT INTO peer_prekeys (public_id, spk_b64, otks_json) VALUES (?, ?, ?)`,
+        [
+          e.publicId,
+          e.spk ? encodeSignedReceiveKey(e.spk) : null,
+          JSON.stringify(e.otks.map((p) => toBase64(p))),
+        ],
+      );
+    }
+  });
 }
 
 export async function loadPeerPrekeys(): Promise<
