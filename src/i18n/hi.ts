@@ -183,6 +183,7 @@ export const hi: Catalog = {
   'settings.limitationLocation': 'आपकी भौतिक जगह का पता लगना। Bluetooth एक रेडियो है; सही उपकरण वाला कोई भी जान सकता है कि यहाँ कोई फ़ोन प्रसारण कर रहा है, भले ही वह उसे पढ़ न सके।',
   'settings.limitationShoulder': 'आपके पास खड़ा कोई व्यक्ति आपकी स्क्रीन पढ़ रहा हो।',
   'settings.limitationContact': 'जिस संपर्क को आपने आमने-सामने सत्यापित नहीं किया, उसका कोई और निकलना।',
+  'settings.limitationBackground': 'Background relaying. iOS and Android may pause Bluetooth when the app is not on screen; a phone in a pocket may stop relaying. Keep the app open for reliable meshing.',
   'settings.auditWarning': 'इस सॉफ़्टवेयर का स्वतंत्र ऑडिट नहीं हुआ है। इसे उपयोगी मानें, गारंटी नहीं। यदि आपकी सुरक्षा इस पर निर्भर है, तो मानें कि एक दृढ़ राज्य विरोधी फिर भी जान सकता है कि आप वहाँ मौजूद थे और प्रसारण कर रहे थे।',
   'settings.openSourceA11y': '100 प्रतिशत ओपन सोर्स। GitHub पर सोर्स कोड खोलता है।',
   'settings.openSource': '100% ओपन सोर्स',

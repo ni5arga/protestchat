@@ -379,6 +379,7 @@ class BleMeshModule : Module() {
   private var lastPublishedState: String? = null
   private var housekeepingScheduled = false
   private var stateReceiver: BroadcastReceiver? = null
+  private var serviceStarted = false
 
   private val random = SecureRandom()
 
@@ -417,6 +418,7 @@ class BleMeshModule : Module() {
           scheduleRotation()
           scheduleHousekeeping()
           startAdvertisingNow()
+          startForegroundServiceIfNeeded()
           promise.resolve(null)
         }
       }
@@ -431,6 +433,7 @@ class BleMeshModule : Module() {
           if (!ensureAdapter(promise)) return@post
           scheduleHousekeeping()
           startScanningNow()
+          startForegroundServiceIfNeeded()
           promise.resolve(null)
         }
       }
@@ -603,6 +606,34 @@ class BleMeshModule : Module() {
   // -------------------------------------------------------------------------
   // Radio lifecycle
   // -------------------------------------------------------------------------
+
+  private fun startForegroundServiceIfNeeded() {
+    if (serviceStarted) return
+    val context = appContext.reactContext ?: return
+    val intent = Intent(context, BleMeshService::class.java)
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        context.startForegroundService(intent)
+      } else {
+        @Suppress("DEPRECATION")
+        context.startService(intent)
+      }
+      serviceStarted = true
+    } catch (e: Throwable) {
+      // Foreground service is best-effort. If the OS refuses it, the radio still
+      // works while the app is foregrounded; emit an advisory error so the UI can
+      // tell the user background relay is not available.
+      emitError(BleErrorCode.INTERNAL, "Could not start mesh foreground service: ${describe(e)}")
+    }
+  }
+
+  private fun stopForegroundService() {
+    if (!serviceStarted) return
+    val context = appContext.reactContext ?: return
+    val intent = Intent(context, BleMeshService::class.java)
+    runCatching { context.stopService(intent) }
+    serviceStarted = false
+  }
 
   private fun ensureAdapter(promise: Promise?): Boolean {
     if (adapter == null) {
@@ -1122,6 +1153,7 @@ class BleMeshModule : Module() {
 
     stopAdvertisingNow()
     stopScanningNow()
+    stopForegroundService()
 
     val announced = links.values.mapNotNull { if (it.announced) it.remoteTag else null }.distinct()
     for (link in links.values) {

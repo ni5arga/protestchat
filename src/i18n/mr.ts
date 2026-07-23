@@ -134,6 +134,7 @@ export const mr: Catalog = {
   'settings.limitationLocation': 'तुमचे प्रत्यक्ष स्थान शोधले जाणे. Bluetooth हा रेडिओ आहे; योग्य उपकरण असलेला कोणीही येथे फोन प्रसारित करत आहे हे ओळखू शकतो, जरी संदेश वाचता येत नसले तरी.',
   'settings.limitationShoulder': 'शेजारी उभी व्यक्ती तुमची स्क्रीन वाचणे.',
   'settings.limitationContact': 'प्रत्यक्ष पडताळणी न केलेला संपर्क दुसराच कोणी असणे.',
+  'settings.limitationBackground': 'Background relaying. iOS and Android may pause Bluetooth when the app is not on screen; a phone in a pocket may stop relaying. Keep the app open for reliable meshing.',
   'settings.auditWarning': 'या सॉफ्टवेअरचे स्वतंत्र ऑडिट झालेले नाही. ते उपयोगी समजा, हमी नाही. तुमची सुरक्षितता यावर अवलंबून असल्यास, ठाम सरकारी विरोधकाला तुम्ही तिथे होतात आणि प्रसारण करत होतात हे कळू शकते असे गृहीत धरा.',
   'settings.openSourceA11y': '100 टक्के ओपन सोर्स. GitHub वर सोर्स कोड उघडते.',
   'settings.openSource': '100% ओपन सोर्स',

@@ -126,7 +126,7 @@ The migration is an upgrade rather than a workaround. Nearby gave us no control 
 
 The whole point is one thing working, so test exactly that first.
 
-**Setup.** Install the build on two phones (one iPhone and one Android is the interesting case). Grant the Bluetooth permissions on Android (and Location on Android 11 and below); Bluetooth on iOS. Keep the app in the **foreground** on both — background BLE is an unsolved problem, see the threat model.
+**Setup.** Install the build on two phones (one iPhone and one Android is the interesting case). Grant the Bluetooth permissions on Android (and Location on Android 11 and below); Bluetooth on iOS. Keep the app in the **foreground** on both for reliable relaying — background BLE is only best-effort, see the threat model.
 
 **1. Cut the network for real.**
 

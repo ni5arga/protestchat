@@ -461,14 +461,20 @@ private final class BleMeshRadio: NSObject {
       central = CBCentralManager(
         delegate: self,
         queue: queue,
-        options: [CBCentralManagerOptionShowPowerAlertKey: true]
+        options: [
+          CBCentralManagerOptionShowPowerAlertKey: true,
+          CBCentralManagerOptionRestoreIdentifierKey: "org.protestchat.central",
+        ]
       )
     }
     if peripheralManager == nil {
       peripheralManager = CBPeripheralManager(
         delegate: self,
         queue: queue,
-        options: [CBPeripheralManagerOptionShowPowerAlertKey: false]
+        options: [
+          CBPeripheralManagerOptionShowPowerAlertKey: false,
+          CBPeripheralManagerOptionRestoreIdentifierKey: "org.protestchat.peripheral",
+        ]
       )
     }
   }
@@ -986,6 +992,18 @@ extension BleMeshRadio: CBCentralManagerDelegate {
     applyCentralState()
   }
 
+  func centralManager(_ manager: CBCentralManager, willRestoreState dict: [String: Any]) {
+    // iOS relaunched the app to handle a BLE event. If we were scanning when the
+    // OS terminated us, resume scanning so the mesh can discover peers again.
+    // Reconnections happen through fresh discovery; restoring connected
+    // peripherals is deliberately left to the next scan cycle to keep this path
+    // simple and safe.
+    if !wantScanning {
+      wantScanning = true
+    }
+    applyCentralState()
+  }
+
   func centralManager(
     _ manager: CBCentralManager,
     didDiscover peripheral: CBPeripheral,
@@ -1151,6 +1169,15 @@ extension BleMeshRadio: CBPeripheralDelegate {
 extension BleMeshRadio: CBPeripheralManagerDelegate {
   func peripheralManagerDidUpdateState(_ manager: CBPeripheralManager) {
     publishStateIfChanged()
+    applyPeripheralState()
+  }
+
+  func peripheralManager(_ manager: CBPeripheralManager, willRestoreState dict: [String: Any]) {
+    // iOS relaunched the app to handle a BLE event. If we were advertising when
+    // the OS terminated us, resume advertising so peers can still find us.
+    if !wantAdvertising {
+      wantAdvertising = true
+    }
     applyPeripheralState()
   }
 

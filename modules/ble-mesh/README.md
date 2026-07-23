@@ -334,9 +334,13 @@ Both `CBCentralManager` and `CBPeripheralManager` are constructed lazily on the
 first `start*` call, because constructing either is what triggers the permission
 prompt and an app that has not yet asked to use the radio should not be prompting.
 
-Background operation is **not** configured (no `UIBackgroundModes`). iOS suspends
-BLE aggressively and background mesh relaying is open problem #4 in the threat
-model; keep the app in the foreground.
+Background operation is **best-effort**. iOS has `bluetooth-central` and
+`bluetooth-peripheral` `UIBackgroundModes` plus CoreBluetooth state-restoration
+identifiers, and Android runs a `connectedDevice` foreground service while the
+radio is on. These improve the odds that a pocketed phone continues to relay,
+but they are not guarantees: iOS still throttles scan/advertise rates when
+backgrounded, and Android OEMs vary widely in how aggressively they kill a
+foreground service. Keep the app open for reliable relaying.
 
 ## Platform semantics the TS layer must paper over
 

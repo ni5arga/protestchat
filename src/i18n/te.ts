@@ -131,6 +131,7 @@ export const te: Catalog = {
   'settings.limitationLocation': 'మీ భౌతిక స్థానం గుర్తించడం. Bluetooth ఒక రేడియో; సరైన పరికరాలు ఉన్నవారు ఇక్కడ ఫోన్ ప్రసారం చేస్తోందని తెలుసుకోగలరు, సందేశాన్ని చదవలేకపోయినా.',
   'settings.limitationShoulder': 'మీ పక్కన నిలబడినవారు స్క్రీన్ చదవడం.',
   'settings.limitationContact': 'మీరు ఎదురెదురుగా ధృవీకరించని కాంటాక్ట్ వేరొకరిగా ఉండటం.',
+  'settings.limitationBackground': 'Background relaying. iOS and Android may pause Bluetooth when the app is not on screen; a phone in a pocket may stop relaying. Keep the app open for reliable meshing.',
   'settings.auditWarning': 'ఈ సాఫ్ట్‌వేర్ స్వతంత్రంగా ఆడిట్ చేయబడలేదు. ఉపయోగకరమని భావించండి, హామీగా కాదు. మీ భద్రత దీనిపై ఆధారపడితే, దృఢమైన ప్రభుత్వ ప్రత్యర్థి మీరు అక్కడ ఉండి ప్రసారం చేశారని ఇంకా తెలుసుకోగలడని భావించండి.',
   'settings.openSourceA11y': '100 శాతం ఓపెన్ సోర్స్. GitHubలో సోర్స్ కోడ్‌ను తెరుస్తుంది.',
   'settings.openSource': '100% ఓపెన్ సోర్స్',
