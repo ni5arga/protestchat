@@ -447,12 +447,20 @@ export async function storeEnvelope(e: Envelope, isOurs = false): Promise<void> 
   const now = Date.now();
   const claimed = e.createdAt + e.ttlSeconds * 1000;
 
+  let raw: string;
+  try {
+    raw = toBase64(encodeEnvelope(e));
+  } catch {
+    // Oversized or malformed — refuse rather than throw into fire-and-forget ingest (#72).
+    return;
+  }
+
   await d.runAsync(
     `INSERT OR REPLACE INTO envelopes (id, raw, created_at, expires_at, hop_count, is_ours)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
       toBase64(e.id),
-      toBase64(encodeEnvelope(e)),
+      raw,
       e.createdAt,
       Math.min(claimed, now + MAX_LOCAL_RETENTION_MS),
       e.hopCount,

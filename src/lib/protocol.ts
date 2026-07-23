@@ -120,6 +120,10 @@ export function decodeEnvelope(raw: Uint8Array): Envelope | null {
 
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const payloadLen = view.getUint16(32);
+  // Same ceiling encodeEnvelope enforces. Native BLE reassembles up to 32 KiB,
+  // so without this check an oversized payload decodes, burns trial-decrypt,
+  // then throws in storeEnvelope as an unhandled rejection (#72).
+  if (payloadLen > MAX_ENVELOPE_LEN - HEADER_LEN) return null;
   if (raw.length !== HEADER_LEN + payloadLen) return null;
 
   const createdAt = view.getUint16(20) * 0x100000000 + view.getUint32(22);
