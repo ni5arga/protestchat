@@ -10,6 +10,7 @@ import {
   getRadioAccessStatus,
   openAppSettings,
   requestRadioAccess,
+  shouldAutoStartRadio,
   subscribeToRadioAccess,
 } from '@/lib/radio-access';
 import type { BleState, BleStatus } from '../../modules/ble-mesh/src/BleMesh.types';
@@ -64,11 +65,15 @@ function copyFor(
 
 export function RadioAccessGate({
   appReady,
-  startRadio,
+  radioEnabled,
+  ensureRadio,
   children,
 }: {
   appReady: boolean;
-  startRadio: () => Promise<void>;
+  /** False when the user turned Mesh Radio off in Settings (#71). */
+  radioEnabled: boolean;
+  /** Start the mesh only if `radioEnabled` and identity are ready. */
+  ensureRadio: () => Promise<void>;
   children: ReactNode;
 }) {
   const t = useTheme();
@@ -88,10 +93,13 @@ export function RadioAccessGate({
         setAdmitted(false);
         return;
       }
-      await startRadio();
+      // BLE ready is necessary but not sufficient — respect a deliberate off (#71).
+      if (shouldAutoStartRadio(true, radioEnabled)) {
+        await ensureRadio();
+      }
       if (mounted.current) setAdmitted(true);
     },
-    [startRadio],
+    [ensureRadio, radioEnabled],
   );
 
   const request = useCallback(async () => {

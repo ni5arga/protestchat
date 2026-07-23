@@ -1,6 +1,9 @@
 import { Linking, Platform } from 'react-native';
 
 import type { BleStatus, StateChangeEvent } from '../../modules/ble-mesh/src/BleMesh.types';
+import { shouldAutoStartRadio } from './radio-pref';
+
+export { shouldAutoStartRadio } from './radio-pref';
 
 type RadioModule = {
   getStatus(): Promise<BleStatus>;
@@ -51,3 +54,4 @@ export function subscribeToRadioAccess(listener: (status: BleStatus) => void): (
 export function openAppSettings(): Promise<void> {
   return Linking.openSettings();
 }
+

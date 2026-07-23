@@ -41,6 +41,8 @@ import { mesh, shortName } from './mesh';
 import { LocalPrekeys, PeerPrekeyBook } from './prekeys';
 
 const NAME_KEY = 'protestchat.displayName.v1';
+/** '1' = user wants mesh on; '0' = deliberately off. Missing → on (#71). */
+const RADIO_PREF_KEY = 'protestchat.radioEnabled.v1';
 
 type AppContextValue = {
   ready: boolean;
@@ -106,10 +108,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [channels, setChannels] = useState<db.Channel[]>([]);
   const [groups, setGroups] = useState<db.Group[]>([]);
   const [contactCode, setContactCode] = useState('');
+  const [radioEnabled, setRadioEnabled] = useState(true);
 
   const identityRef = useRef<Identity | null>(null);
   const localPrekeysRef = useRef(new LocalPrekeys());
   const peerPrekeysRef = useRef(new PeerPrekeyBook());
+  const radioEnabledRef = useRef(true);
 
   const persistPrekeys = useCallback(async (id: Identity) => {
     const local = localPrekeysRef.current;
@@ -160,10 +164,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       localPrekeysRef.current.load(stored.spk, stored.otks);
       peerPrekeysRef.current.load(await db.loadPeerPrekeys());
 
+      const radioPref = await SecureStore.getItemAsync(RADIO_PREF_KEY);
+      const wantsRadio = radioPref !== '0';
+      radioEnabledRef.current = wantsRadio;
+
       if (cancelled) return;
       identityRef.current = id;
       setIdentity(id);
       setName(name);
+      setRadioEnabled(wantsRadio);
 
       mesh.onPrekeysChanged = () => {
         const cur = identityRef.current;
@@ -218,11 +227,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setName(trimmed);
   }, []);
 
-  const startRadio = useCallback(async () => {
-    if (identityRef.current) await mesh.start(identityRef.current, displayName).catch(() => {});
+  const ensureRadio = useCallback(async () => {
+    if (!radioEnabledRef.current || !identityRef.current) return;
+    await mesh.start(identityRef.current, displayName).catch(() => {});
   }, [displayName]);
 
-  const stopRadio = useCallback(() => mesh.stop(), []);
+  const startRadio = useCallback(async () => {
+    radioEnabledRef.current = true;
+    setRadioEnabled(true);
+    await SecureStore.setItemAsync(RADIO_PREF_KEY, '1');
+    await ensureRadio();
+  }, [ensureRadio]);
+
+  const stopRadio = useCallback(async () => {
+    radioEnabledRef.current = false;
+    setRadioEnabled(false);
+    await SecureStore.setItemAsync(RADIO_PREF_KEY, '0');
+    await mesh.stop();
+  }, []);
 
   const sendText = useCallback(
     async (conversationId: string, text: string) => {
@@ -410,6 +432,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setName(freshName);
     await persistPrekeys(fresh);
     await refresh();
+    // Fresh identity after a successful wipe: radio preference resets to on so
+    // the device is usable again without a trip through Settings.
+    radioEnabledRef.current = true;
+    setRadioEnabled(true);
+    await SecureStore.setItemAsync(RADIO_PREF_KEY, '1');
     await mesh.start(fresh, freshName).catch(() => {});
   }, [refresh, persistPrekeys]);
 
@@ -468,7 +495,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   return (
     <AppContext.Provider value={value}>
-      <RadioAccessGate appReady={ready} startRadio={startRadio}>
+      <RadioAccessGate appReady={ready} radioEnabled={radioEnabled} ensureRadio={ensureRadio}>
         {children}
       </RadioAccessGate>
     </AppContext.Provider>
