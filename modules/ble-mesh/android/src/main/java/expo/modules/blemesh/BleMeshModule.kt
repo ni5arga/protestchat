@@ -1058,13 +1058,23 @@ class BleMeshModule : Module() {
    * advertised tag at all still resolves normally here.
    */
   private fun handleHello(link: Link, tag: ByteArray) {
+    // HELLO is write-once. The tag was assigned above this guard before, so a
+    // re-HELLO on the unauthenticated wire re-attributed a live link (#29).
+    if (link.announced) return
     if (tag.size != TAG_BYTES) {
       dropLink(link.peerId, announce = false)
       return
     }
     link.remoteTag = hex(tag)
 
-    if (link.announced) return
+    // Keep one link when both directions came up, same tie-break as iOS (#52).
+    val loser = resolveDuplicateLink(link)
+    if (loser == link.peerId) {
+      // Peer keeps the other direction; retire this one before it announced.
+      dropLink(link.peerId, announce = false)
+      return
+    }
+
     link.announced = true
     // A link that reached HELLO is proof the peer is dialable, so the backoff
     // ladder for it starts from scratch next time.
@@ -1081,6 +1091,30 @@ class BleMeshModule : Module() {
         "isIncoming" to link.isIncoming
       )
     )
+
+    // Drop the duplicate after announcing, so dropLink's same-tag guard sees a
+    // live link and stays quiet — JS keeps one peer, no drop/re-add.
+    if (loser != null) dropLink(loser, announce = true)
+  }
+
+  /**
+   * The peerId of the link to discard when [link] duplicates one to the same
+   * peer, else null. Same tie-break as the iOS resolver, computed identically
+   * on both phones: smaller tag keeps the link it dialled out on.
+   */
+  private fun resolveDuplicateLink(link: Link): String? {
+    val tag = link.remoteTag ?: return null
+    val other = links.values.firstOrNull {
+      it.peerId != link.peerId && it.remoteTag == tag
+    } ?: return null
+
+    val weAreSmaller = hex(localTag) < tag
+    val keeper = if (weAreSmaller) {
+      if (link.isIncoming) other else link
+    } else {
+      if (link.isIncoming) link else other
+    }
+    return if (keeper.peerId == link.peerId) other.peerId else link.peerId
   }
 
   // -------------------------------------------------------------------------

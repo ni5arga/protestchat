@@ -791,6 +791,9 @@ private final class BleMeshRadio: NSObject {
   /// is in-band, full width, and symmetric, so a link that connects with no
   /// advertised tag at all still resolves normally here.
   private func handleHello(link: Link, tag: Data) {
+    // HELLO is write-once. The wire is unauthenticated, so a HELLO on an
+    // announced link is a stranger trying to re-label or starve it (#29).
+    guard !link.announced else { return }
     guard tag.count == Wire.tagBytes else {
       dropLink(link.peerId, announce: false)
       return
@@ -802,7 +805,6 @@ private final class BleMeshRadio: NSObject {
       if loser == link.peerId { return }
     }
 
-    guard !link.announced else { return }
     link.announced = true
     emit("onConnected", [
       "id": link.peerId,

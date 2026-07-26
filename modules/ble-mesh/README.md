@@ -211,7 +211,14 @@ hold, or they discard opposite links and end up with none:
 > the device with the lexicographically **smaller** tag keeps the link it
 > **dialled out** on.
 
-On the other phone that same wire is the inbound one, so both keep it.
+On the other phone that same wire is the inbound one, so both keep it. Both
+platforms run this resolver (`resolveDuplicateLinks` on iOS,
+`resolveDuplicateLink` on Android).
+
+`HELLO` is accepted **once per link**: a second one on an already-announced link
+is ignored, never re-labelled. The wire is unauthenticated, so otherwise a
+stranger could claim a peer's tag to spoof payload attribution, or collide tags
+to make the resolver tear a victim's real link down.
 
 A link that has not sent `HELLO` within 10 s is dropped. Android will only give
 you a handful of concurrent GATT connections — typically around seven, after which
