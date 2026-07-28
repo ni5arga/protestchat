@@ -42,7 +42,7 @@ Wire layout of sealed payloads is unchanged (relays still cannot tell modes apar
 
 ## Trial-decrypt cost
 
-Every sealed envelope on the air is tried against every agreement secret we hold (opacity: no prekey-id hint). With the ceiling above, worst case is ~28 X25519 ops + AEAD fails per envelope before the long-term try — see the `trial-open cost` unit test for a host-side measurement. A flooder can still amplify this into battery drain; ingress budgets remain a separate hardening track.
+Every sealed envelope over the air is tried against every agreement secret we hold (opacity: no prekey-id hint). With the ceiling above, worst case is ~28 X25519 ops + AEAD fails per envelope before the long-term try — see the `trial-open cost` unit test for a host-side measurement. A flooder can still amplify this into battery drain; ingress budgets remain a separate hardening track.
 
 ## Tests
 
