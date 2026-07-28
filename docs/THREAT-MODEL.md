@@ -47,7 +47,7 @@ The app has three ways to send, and conflating them is the most likely way it ge
 
 **Channel key derivation** is scrypt (N=2^14) over the passphrase, salted with the channel name. Paid once at join and cached, so it is never on a message path. It is a compromise: it raises the cost of an offline dictionary attack on recorded traffic but does not rescue a genuinely weak passphrase. **Argon2id via a native binding is the single cheapest security upgrade available to this codebase.**
 
-**Groups are fan-out** — one independently sealed copy per member, no group key. This means no rekeying problem and no group-membership cryptography to get wrong; removing someone is simply not sending to them. Membership is local, so two members can disagree about who is in a group. Injection is jittered over 0–3s because N envelopes leaving one device simultaneously reveals group size to an observer who cannot decrypt anything.
+**Groups are fan-out** — one independently sealed copy per member, no group key. This means no rekeying problem and no group-membership cryptography to get wrong; removing someone is simply not sending to them. Membership is local, so two members can disagree about who is in a group. Injection is jittered over 0–3s because N envelopes leaving one device simultaneously reveal group size to an observer who cannot decrypt anything.
 
 ## Cryptographic design
 
