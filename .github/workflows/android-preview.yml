@@ -59,8 +59,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check Expo dependencies
-        run: npx expo install --check
+      - name: Check Expo dependencies (advisory)
+        # Non-blocking on purpose. `expo install --check` fails whenever Expo
+        # ships a patch within the SDK, which is often, so gating CI on it
+        # red-lights every unrelated PR until someone runs `expo install --fix`.
+        # Keep it visible as a warning annotation, but never fail the job on it.
+        run: npx expo install --check || echo "::warning::Expo dependency drift detected (advisory only, not blocking). Run 'npx expo install --fix' to sync."
 
       - name: Lint
         run: npm run lint
