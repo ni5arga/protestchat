@@ -16,6 +16,7 @@
  */
 
 import { sha256 } from '@noble/hashes/sha2.js';
+import { randomBytes } from '@noble/hashes/utils.js';
 
 import { concat, fromBase64, fromUtf8, toBase64, toUtf8 } from './bytes';
 // crypto-core rather than crypto: crypto.ts is only the keystore, and it pulls
@@ -45,6 +46,18 @@ export const SERVICE_ID = 'org.protestchat.mesh.v1';
 
 /** Cap on envelopes offered per peer per encounter, so one greedy peer cannot drain us. */
 const MAX_SYNC_PER_PEER = 200;
+
+// Fisher–Yates over CSPRNG bytes. De-correlates the order (and, past the cap,
+// the membership) of an offered inventory so the set is not a stable fingerprint.
+function shuffle<T>(xs: T[]): T[] {
+  if (xs.length < 2) return xs;
+  const r = randomBytes(xs.length);
+  for (let i = xs.length - 1; i > 0; i--) {
+    const j = r[i] % (i + 1);
+    [xs[i], xs[j]] = [xs[j], xs[i]];
+  }
+  return xs;
+}
 
 /**
  * Hard ceiling on how many distinct envelopes we will ever serve one peer in a
@@ -769,7 +782,12 @@ export class MeshEngine {
   // -------------------------------------------------------------------------
 
   private async offerInventory(peerId: string): Promise<void> {
-    const ids = (await this.store.envelopeIds()).slice(0, MAX_SYNC_PER_PEER);
+    // Shuffle before the cap. envelopeIds() yields ids in storage order, which
+    // on the sqlite path is expiry-correlated (envelopes_by_expiry) — a stable
+    // order is a fingerprint, and a soonest-to-expire prefix under the cap is a
+    // stable subset. A fresh random sample each offer is neither. Reconciliation
+    // is set membership (handleInventory), so order carries no meaning to drop.
+    const ids = shuffle(await this.store.envelopeIds()).slice(0, MAX_SYNC_PER_PEER);
     await this.sendControl(peerId, EnvelopeType.Inventory, ids);
   }
 
