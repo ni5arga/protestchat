@@ -137,6 +137,7 @@ export const bn: Catalog = {
   'settings.limitationLocation': 'আপনার অবস্থান শনাক্ত হওয়া। Bluetooth একটি রেডিও; সঠিক যন্ত্র থাকা কেউ বুঝতে পারে এখানে একটি ফোন পাঠাচ্ছে, যদিও বার্তা পড়তে পারে না।',
   'settings.limitationShoulder': 'পাশে দাঁড়ানো কেউ আপনার স্ক্রিন পড়া।',
   'settings.limitationContact': 'সামনাসামনি যাচাই না-করা যোগাযোগটি অন্য কেউ হওয়া।',
+  'settings.limitationBackground': 'Background relaying. iOS and Android may pause Bluetooth when the app is not on screen; a phone in a pocket may stop relaying. Keep the app open for reliable meshing.',
   'settings.auditWarning': 'এই সফটওয়্যার স্বাধীনভাবে অডিট করা হয়নি। একে উপকারী ভাবুন, নিশ্চয়তা নয়। নিরাপত্তা এর ওপর নির্ভর করলে ধরে নিন দৃঢ়প্রতিজ্ঞ রাষ্ট্রীয় প্রতিপক্ষ তবুও জানতে পারে আপনি সেখানে ছিলেন এবং সম্প্রচার করছিলেন।',
   'settings.openSourceA11y': '100 শতাংশ ওপেন সোর্স। GitHub-এ সোর্স কোড খোলে।',
   'settings.openSource': '100% ওপেন সোর্স',

@@ -96,7 +96,7 @@ Residuals (see `docs/FORWARD-SECRECY.md`): no Double Ratchet / post-compromise h
 
    What remains unproven: whether stopping and restarting advertising actually prompts each OS to re-randomise the link-layer BLE address. That is the only lever an app has, and it is not a guarantee. **Someone with a BLE sniffer and two phones could settle this in an afternoon, and it would be a genuinely valuable contribution.**
 3. **Sybil resistance.** Identities are free, so per-identity rate limits are worthless. One device can present as hundreds and flood the mesh. Candidates: proof-of-work on send, web-of-trust relay budgets. Unsolved.
-4. **iOS background operation.** iOS suspends BLE aggressively. A relay that only works with the screen on is a much weaker relay.
+4. **Background relaying — partially addressed, limits remain.** iOS and Android both suspend BLE work when the app is not foregrounded, which is the single biggest reason a pocket phone stops relaying. We now declare the iOS `bluetooth-central` and `bluetooth-peripheral` background modes, pass CoreBluetooth state-restoration identifiers, and run an Android foreground service while the radio is on. These are best-effort: iOS still throttles scan and advertise rates, background modes are not a guarantee, and Android OEMs differ widely in how aggressively they kill a foreground service. **Keep the app open for reliable relaying.**
 5. **Duress / decoy mode.** Panic wipe exists; a duress PIN opening a plausible decoy does not.
 6. **Reproducible builds.**
 7. **Channel passphrase strength.** No strength meter, no enforced minimum. At a protest passphrases spread by shouting and will be weak.

@@ -24,6 +24,10 @@
         "NSBonjourServices": [
           "_nearby._tcp",
           "_nearby._udp"
+        ],
+        "UIBackgroundModes": [
+          "bluetooth-central",
+          "bluetooth-peripheral"
         ]
       },
       "bundleIdentifier": "com.anonymous.protestchat"

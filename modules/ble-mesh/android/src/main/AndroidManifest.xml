@@ -36,7 +36,20 @@
     android:name="android.permission.ACCESS_FINE_LOCATION"
     android:maxSdkVersion="30" />
 
+  <!-- Foreground service: keeps the mesh process alive while backgrounded. -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <!-- Android 14+ requires a specific foreground-service type for BLE work. -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
   <!-- BLE, and specifically the peripheral role, are both required. -->
   <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+
+  <application>
+    <service
+      android:name=".BleMeshService"
+      android:enabled="true"
+      android:exported="false"
+      android:foregroundServiceType="connectedDevice" />
+  </application>
 
 </manifest>

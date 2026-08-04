@@ -133,6 +133,7 @@ export const ta: Catalog = {
   'settings.limitationLocation': 'உங்கள் இருப்பிடம் கண்டறியப்படுவது. Bluetooth ஒரு ரேடியோ; சரியான கருவி உள்ளவர் இங்கே ஒரு தொலைபேசி ஒலிபரப்புவதை அறிய முடியும், செய்தியைப் படிக்க முடியாவிட்டாலும்.',
   'settings.limitationShoulder': 'உங்கள் அருகில் நிற்பவர் திரையைப் படிப்பது.',
   'settings.limitationContact': 'நேரில் சரிபார்க்காத தொடர்பு வேறொருவராக இருப்பது.',
+  'settings.limitationBackground': 'Background relaying. iOS and Android may pause Bluetooth when the app is not on screen; a phone in a pocket may stop relaying. Keep the app open for reliable meshing.',
   'settings.auditWarning': 'இந்த மென்பொருள் சுயாதீனமாகத் தணிக்கை செய்யப்படவில்லை. பயனுள்ளது என்று கருதுங்கள், உத்தரவாதம் அல்ல. உங்கள் பாதுகாப்பு இதைச் சார்ந்திருந்தால், உறுதியான அரசு எதிரி நீங்கள் அங்கு இருந்து ஒலிபரப்பியதை இன்னும் அறிய முடியும் என்று கருதுங்கள்.',
   'settings.openSourceA11y': '100 சதவீதம் திறந்த மூலமாகும். GitHub-ல் மூலக் குறியீட்டைத் திறக்கும்.',
   'settings.openSource': '100% திறந்த மூலம்',

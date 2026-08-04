@@ -46,6 +46,7 @@ export default function SettingsScreen() {
     copy('settings.limitationLocation'),
     copy('settings.limitationShoulder'),
     copy('settings.limitationContact'),
+    copy('settings.limitationBackground'),
   ];
 
   const runWipe = async () => {
