@@ -7,5 +7,4 @@
 - [ ] Manual / device steps if BLE or UI changed
 
 ## Safety / docs
-- [ ] No new security claims without threat-model / user-guide updates
-- [ ] User-facing mode or install copy updated in `website/` if needed
+- [ ] No new security claims without threat-model updates

@@ -6,7 +6,6 @@ Thanks for helping. protestchat is security software for people under stress —
 
 1. Read [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) and [`docs/FORWARD-SECRECY.md`](docs/FORWARD-SECRECY.md) if you touch crypto, mesh, or BLE.
 2. Prefer a focused PR that closes one issue over a kitchen-sink patch.
-3. If you change user-visible mode warnings or safety claims, update the user guide in [`website/`](website/) in the **same** PR (docs-as-code — see #11).
 
 ## Setup
 
