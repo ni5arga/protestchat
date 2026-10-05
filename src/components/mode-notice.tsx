@@ -42,7 +42,7 @@ function eyebrowFor(info: ConversationInfo, copy: ReturnType<typeof useI18n>['t'
     case 'channel':
       return copy('mode.sharedPassphrase');
     case 'group':
-      return copy('mode.encryptedMembers');
+      return info.tone === 'caution' ? copy('mode.notVerifiedMembers') : copy('mode.encryptedMembers');
     case 'direct':
       return info.tone === 'ok' ? copy('mode.encrypted') : copy('mode.notVerified');
   }

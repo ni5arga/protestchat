@@ -13,7 +13,7 @@
  *     and two of these three modes are not safe in the way a padlock implies.
  */
 
-import type { Channel, Group } from './db';
+import type { Channel, Contact, Group } from './db';
 import type { Translator } from '@/i18n/core';
 
 export type ConversationMode = 'public' | 'channel' | 'group' | 'direct';
@@ -32,7 +32,13 @@ export type ConversationInfo = {
 
 export function describeConversation(
   conversationId: string,
-  ctx: { channels: Channel[]; groups: Group[]; contactName?: string; verified?: boolean },
+  ctx: {
+    channels: Channel[];
+    groups: Group[];
+    contacts?: Contact[];
+    contactName?: string;
+    verified?: boolean;
+  },
   i18n: Translator,
 ): ConversationInfo {
   const { t, plural } = i18n;
@@ -64,11 +70,19 @@ export function describeConversation(
   if (conversationId.startsWith('~')) {
     const group = ctx.groups.find((g) => g.id === conversationId.slice(1));
     const n = group?.members.length ?? 0;
+    // A member with no matching contact record (yet) is treated as
+    // unverified — the absence of proof is not proof of safety.
+    const unverified = (group?.members ?? []).filter(
+      (m) => !ctx.contacts?.find((c) => c.publicId === m)?.verified,
+    ).length;
     return {
       mode: 'group',
       title: group?.name ?? t('common.group'),
-      warning: plural('conversation.groupWarning', n),
-      tone: 'ok',
+      warning:
+        unverified > 0
+          ? plural('conversation.groupWarningUnverified', unverified)
+          : plural('conversation.groupWarning', n),
+      tone: unverified > 0 ? 'caution' : 'ok',
       showSenders: true,
     };
   }
