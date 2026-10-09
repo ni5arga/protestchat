@@ -209,6 +209,8 @@ export const en = {
   'verify.checked': 'You marked this person as checked.',
   'verify.match': 'They match — mark verified',
   'verify.noMatch': 'They do not match',
+  'verify.externalOrigin':
+    "This screen was opened from outside the app, so it cannot confirm verification here. Open it from this person's chat and tap Verify to check safety numbers in person.",
 
   'radio.preparingTitle': 'Preparing securely',
   'radio.preparingDetail': 'Loading your identity and local messages.',

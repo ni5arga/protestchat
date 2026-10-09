@@ -15,6 +15,7 @@
  */
 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { Button, Notice, Screen, Tag } from '@/components/ui';
@@ -22,6 +23,7 @@ import { Fonts, Radius, Spacing, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useI18n } from '@/i18n/provider';
 import { useApp } from '@/lib/app-state';
+import { consumeVerificationArm } from '@/lib/verify-session';
 
 export default function VerifyScreen() {
   const t = useTheme();
@@ -34,6 +36,12 @@ export default function VerifyScreen() {
   const contact = contacts.find((c) => c.publicId === peerId);
   const digits = safetyNumberFor(peerId);
   const rows = digits ? digits.split(' ') : [];
+
+  // Consumed once, on first mount of this exact screen instance, so it can
+  // only ever reflect the in-app "Verify" press that armed this id — never a
+  // deep link, which mounts the same screen with the same params but never
+  // calls armVerification first. See src/lib/verify-session.ts.
+  const [openedInApp] = useState(() => consumeVerificationArm(peerId));
 
   return (
     <Screen contentStyle={{ gap: Spacing.xl }}>
@@ -83,7 +91,7 @@ export default function VerifyScreen() {
             onPress={() => void verifyContact(peerId, false)}
           />
         </View>
-      ) : (
+      ) : openedInApp ? (
         <View style={{ gap: Spacing.md }}>
           <Button
             title={copy('verify.match')}
@@ -97,6 +105,15 @@ export default function VerifyScreen() {
               calm-looking option is the dangerous one. */}
           <Button title={copy('verify.noMatch')} variant="danger" onPress={() => router.back()} />
         </View>
+      ) : (
+        // Reached by a deep link, QR code, or another app — not by the in-app
+        // "Verify" button in chat. A link can carry a real id and this screen
+        // will still show the correct digits for it, but it cannot carry the
+        // in-person comparison that verification exists to prove happened.
+        // No confirmation action is offered here on purpose (issue #34).
+        <Notice tone="caution">
+          <Text style={[Type.callout, { color: t.text }]}>{copy('verify.externalOrigin')}</Text>
+        </Notice>
       )}
     </Screen>
   );
